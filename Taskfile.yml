@@ -1,0 +1,21 @@
+version: "3"
+
+vars:
+  BIN_DIR: bin
+  BIN_NAME: gg
+
+tasks:
+  default:
+    cmds:
+      - task: build
+
+  build:
+    desc: Compile the gg binary into ./bin
+    cmds:
+      - mkdir -p {{.BIN_DIR}}
+      - go build -o {{.BIN_DIR}}/{{.BIN_NAME}} .
+
+  test:
+    desc: Run the Go test suite
+    cmds:
+      - go test ./...
