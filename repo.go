@@ -167,7 +167,7 @@ func ensureRepoStore(cfg Config, repo Repo) (RepoStore, error) {
 			}
 		}
 
-		if err := updateSubmodules(store.MainPath); err != nil {
+		if err := finalizeWorktreeSetup(store.MainPath); err != nil {
 			return RepoStore{}, err
 		}
 	}
@@ -233,10 +233,9 @@ func resolveOneArg(cfg Config, raw string) (Repo, error) {
 	}
 
 	if spec != raw {
-		return canonicalizeRepo(cfg, Repo{
-			Owner: owner,
-			Name:  repo,
-		}), nil
+		owner = expandSegmentAlias(cfg.Aliases, owner)
+		repo = expandSegmentAlias(cfg.Aliases, repo)
+		return resolveCombinedAlias(cfg, owner, repo)
 	}
 
 	owner = expandSegmentAlias(cfg.Aliases, owner)
@@ -438,7 +437,7 @@ func ensureWorktree(store RepoStore, worktreeName string) (string, error) {
 		return "", fmt.Errorf("create worktree %q: %w", worktreeName, err)
 	}
 
-	if err := updateSubmodules(path); err != nil {
+	if err := finalizeWorktreeSetup(path); err != nil {
 		return "", err
 	}
 
@@ -488,7 +487,7 @@ func ensurePRWorktree(store RepoStore, prNumber int) (string, error) {
 		return "", fmt.Errorf("checkout PR %d: %w", prNumber, err)
 	}
 
-	if err := updateSubmodules(path); err != nil {
+	if err := finalizeWorktreeSetup(path); err != nil {
 		return "", err
 	}
 
@@ -671,6 +670,57 @@ func updateSubmodules(worktreePath string) error {
 	}
 
 	return nil
+}
+
+func finalizeWorktreeSetup(worktreePath string) error {
+	if err := updateSubmodules(worktreePath); err != nil {
+		return err
+	}
+
+	if err := setupMiseTooling(worktreePath); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func setupMiseTooling(worktreePath string) error {
+	configPaths, err := findMiseConfigPaths(worktreePath)
+	if err != nil {
+		return err
+	}
+	if len(configPaths) == 0 {
+		return nil
+	}
+
+	for _, configPath := range configPaths {
+		if err := runCommand(worktreePath, "mise", "trust", configPath); err != nil {
+			return fmt.Errorf("trust mise config %s: %w", configPath, err)
+		}
+	}
+
+	if err := runCommand(worktreePath, "mise", "install"); err != nil {
+		return fmt.Errorf("install mise tools in %s: %w", worktreePath, err)
+	}
+
+	return nil
+}
+
+func findMiseConfigPaths(worktreePath string) ([]string, error) {
+	var configPaths []string
+
+	for _, name := range []string{"mise.toml", ".mise.toml"} {
+		path := filepath.Join(worktreePath, name)
+		exists, err := pathExists(path)
+		if err != nil {
+			return nil, err
+		}
+		if exists {
+			configPaths = append(configPaths, path)
+		}
+	}
+
+	return configPaths, nil
 }
 
 func defaultBranchRef(gitDir string) (string, string, error) {

@@ -14,6 +14,15 @@ type repoEntry struct {
 	Path string
 }
 
+type statusOptions struct {
+	ShowFiles bool
+}
+
+type repoStatus struct {
+	Branch string
+	Files  []string
+}
+
 func listCommand(args []string) error {
 	cfg, err := loadConfigOnly()
 	if err != nil {
@@ -47,12 +56,17 @@ func listCommand(args []string) error {
 }
 
 func statusCommand(args []string) error {
+	options, repoArgs, err := parseStatusArgs(args)
+	if err != nil {
+		return err
+	}
+
 	cfg, err := loadConfigOnly()
 	if err != nil {
 		return err
 	}
 
-	repo, err := resolveRepoArgs(cfg, args)
+	repo, err := resolveRepoArgs(cfg, repoArgs)
 	if err != nil {
 		return err
 	}
@@ -78,17 +92,31 @@ func statusCommand(args []string) error {
 		}
 		fmt.Printf("%s %s\n", label, entry.Path)
 
-		output, err := captureCombinedCommand(entry.Path, "git", "status", "--short", "--branch")
+		status, err := readRepoStatus(entry.Path)
 		if err != nil {
 			return fmt.Errorf("status for %s: %w", entry.Path, err)
 		}
 
-		output = strings.TrimSpace(output)
-		if output == "" {
-			fmt.Println("(clean)")
+		if status.Branch != "" {
+			fmt.Printf("branch  %s\n", status.Branch)
+		}
+		if len(status.Files) == 0 {
+			fmt.Println("status  clean")
 			continue
 		}
-		fmt.Println(output)
+
+		changeLabel := "changes"
+		if len(status.Files) == 1 {
+			changeLabel = "change"
+		}
+		fmt.Printf("status  dirty (%d %s)\n", len(status.Files), changeLabel)
+		if !options.ShowFiles {
+			continue
+		}
+
+		for _, file := range status.Files {
+			fmt.Printf("  %s\n", file)
+		}
 	}
 
 	return nil
@@ -340,4 +368,51 @@ func removeEmptyTree(path string) ([]string, error) {
 
 	removed = append(removed, path)
 	return removed, nil
+}
+
+func parseStatusArgs(args []string) (statusOptions, []string, error) {
+	var options statusOptions
+
+	for i, arg := range args {
+		switch arg {
+		case "--files", "-f":
+			options.ShowFiles = true
+		case "--":
+			return options, args[i+1:], nil
+		default:
+			if strings.HasPrefix(arg, "-") {
+				return statusOptions{}, nil, fmt.Errorf("unknown status flag %q", arg)
+			}
+			return options, args[i:], nil
+		}
+	}
+
+	return options, nil, fmt.Errorf("usage: gg status [--files] <owner/repo> or gg status [--files] <owner> <repo>")
+}
+
+func readRepoStatus(path string) (repoStatus, error) {
+	output, err := captureCombinedCommand(path, "git", "status", "--porcelain=v1", "--branch")
+	if err != nil {
+		return repoStatus{}, err
+	}
+
+	return parseRepoStatus(output), nil
+}
+
+func parseRepoStatus(output string) repoStatus {
+	var status repoStatus
+
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "## ") {
+			status.Branch = strings.TrimPrefix(line, "## ")
+			continue
+		}
+		status.Files = append(status.Files, line)
+	}
+
+	return status
 }

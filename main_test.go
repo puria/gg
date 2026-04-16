@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -114,6 +115,26 @@ func TestResolveRepoWithSlashAndFullAlias(t *testing.T) {
 
 	if request.Repo.String() != "ForkbombEu/credimi" {
 		t.Fatalf("repo from full alias = %q, want %q", request.Repo.String(), "ForkbombEu/credimi")
+	}
+}
+
+func TestResolveRepoWithFullAliasTargetUsingSegmentAlias(t *testing.T) {
+	cfg := Config{
+		Root: "/tmp/src",
+		Host: "github.com",
+		Aliases: map[string]string{
+			"f":       "ForkbombEu",
+			"credimi": "f/credimi",
+		},
+	}
+
+	request, err := resolveRequest(cfg, []string{"credimi"})
+	if err != nil {
+		t.Fatalf("resolveRequest() error = %v", err)
+	}
+
+	if request.Repo.String() != "ForkbombEu/credimi" {
+		t.Fatalf("repo from nested alias = %q, want %q", request.Repo.String(), "ForkbombEu/credimi")
 	}
 }
 
@@ -430,6 +451,32 @@ func TestShellInitEmbedsExecutablePath(t *testing.T) {
 	}
 }
 
+func TestShellInitPassesThroughManagementAliases(t *testing.T) {
+	oldExecutablePath := executablePath
+	executablePath = func() (string, error) {
+		return "/tmp/bin/gg", nil
+	}
+	defer func() {
+		executablePath = oldExecutablePath
+	}()
+
+	fishScript, err := shellInit("fish")
+	if err != nil {
+		t.Fatalf("shellInit(fish) error = %v", err)
+	}
+	if !strings.Contains(fishScript, "list ls status prune rm") {
+		t.Fatalf("fish shell script missing ls/rm passthrough: %q", fishScript)
+	}
+
+	bashScript, err := shellInit("bash")
+	if err != nil {
+		t.Fatalf("shellInit(bash) error = %v", err)
+	}
+	if !strings.Contains(bashScript, "|list|ls|status|prune|rm)") {
+		t.Fatalf("bash shell script missing ls/rm passthrough: %q", bashScript)
+	}
+}
+
 func TestRepoHasRefs(t *testing.T) {
 	root := t.TempDir()
 	gitDir := filepath.Join(root, "repo.git")
@@ -534,4 +581,174 @@ func TestListRepoEntriesLocal(t *testing.T) {
 	if entries[0].Kind != "local" || entries[0].Path != "/tmp/local-repo" {
 		t.Fatalf("entry = %#v, want local /tmp/local-repo", entries[0])
 	}
+}
+
+func TestFinalizeWorktreeSetupRunsMiseWhenConfigPresent(t *testing.T) {
+	worktreePath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(worktreePath, "mise.toml"), []byte("[tools]\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	restore := stubExecCommand(t)
+	defer restore()
+
+	if err := finalizeWorktreeSetup(worktreePath); err != nil {
+		t.Fatalf("finalizeWorktreeSetup() error = %v", err)
+	}
+
+	commands := readCommandLog(t)
+	want := []string{
+		"git\tsubmodule\tupdate\t--init\t--recursive",
+		"mise\ttrust\t" + filepath.Join(worktreePath, "mise.toml"),
+		"mise\tinstall",
+	}
+	if len(commands) != len(want) {
+		t.Fatalf("len(commands) = %d, want %d (%v)", len(commands), len(want), commands)
+	}
+	for i := range want {
+		if commands[i] != want[i] {
+			t.Fatalf("command %d = %q, want %q", i, commands[i], want[i])
+		}
+	}
+}
+
+func TestFinalizeWorktreeSetupSkipsMiseWithoutConfig(t *testing.T) {
+	worktreePath := t.TempDir()
+
+	restore := stubExecCommand(t)
+	defer restore()
+
+	if err := finalizeWorktreeSetup(worktreePath); err != nil {
+		t.Fatalf("finalizeWorktreeSetup() error = %v", err)
+	}
+
+	commands := readCommandLog(t)
+	want := []string{
+		"git\tsubmodule\tupdate\t--init\t--recursive",
+	}
+	if len(commands) != len(want) {
+		t.Fatalf("len(commands) = %d, want %d (%v)", len(commands), len(want), commands)
+	}
+	for i := range want {
+		if commands[i] != want[i] {
+			t.Fatalf("command %d = %q, want %q", i, commands[i], want[i])
+		}
+	}
+}
+
+func TestParseStatusArgs(t *testing.T) {
+	options, repoArgs, err := parseStatusArgs([]string{"--files", "ForkbombEu/credimi"})
+	if err != nil {
+		t.Fatalf("parseStatusArgs() error = %v", err)
+	}
+	if !options.ShowFiles {
+		t.Fatal("options.ShowFiles = false, want true")
+	}
+	if len(repoArgs) != 1 || repoArgs[0] != "ForkbombEu/credimi" {
+		t.Fatalf("repoArgs = %#v, want [ForkbombEu/credimi]", repoArgs)
+	}
+}
+
+func TestParseStatusArgsRejectsUnknownFlag(t *testing.T) {
+	if _, _, err := parseStatusArgs([]string{"--nope", "ForkbombEu/credimi"}); err == nil {
+		t.Fatal("parseStatusArgs() error = nil, want error")
+	}
+}
+
+func TestParseRepoStatus(t *testing.T) {
+	status := parseRepoStatus("## main...origin/main [ahead 1]\n M repo.go\n?? new.txt\n")
+
+	if status.Branch != "main...origin/main [ahead 1]" {
+		t.Fatalf("status.Branch = %q, want %q", status.Branch, "main...origin/main [ahead 1]")
+	}
+
+	wantFiles := []string{"M repo.go", "?? new.txt"}
+	if len(status.Files) != len(wantFiles) {
+		t.Fatalf("len(status.Files) = %d, want %d (%v)", len(status.Files), len(wantFiles), status.Files)
+	}
+	for i := range wantFiles {
+		if status.Files[i] != wantFiles[i] {
+			t.Fatalf("status.Files[%d] = %q, want %q", i, status.Files[i], wantFiles[i])
+		}
+	}
+}
+
+func stubExecCommand(t *testing.T) func() {
+	t.Helper()
+
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	t.Setenv("GG_TEST_COMMAND_LOG", logPath)
+
+	oldExecCommand := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		cmdArgs := []string{"-test.run=TestHelperProcess", "--", name}
+		cmdArgs = append(cmdArgs, args...)
+		cmd := exec.Command(os.Args[0], cmdArgs...)
+		cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+		return cmd
+	}
+
+	return func() {
+		execCommand = oldExecCommand
+	}
+}
+
+func readCommandLog(t *testing.T) []string {
+	t.Helper()
+
+	logPath := os.Getenv("GG_TEST_COMMAND_LOG")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", logPath, err)
+	}
+
+	content := strings.TrimSpace(string(data))
+	if content == "" {
+		return nil
+	}
+
+	return strings.Split(content, "\n")
+}
+
+func TestHelperProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
+		return
+	}
+
+	args := os.Args
+	separator := -1
+	for i, arg := range args {
+		if arg == "--" {
+			separator = i
+			break
+		}
+	}
+	if separator == -1 || separator+1 >= len(args) {
+		fmt.Fprintln(os.Stderr, "missing helper separator")
+		os.Exit(2)
+	}
+
+	name := args[separator+1]
+	cmdArgs := args[separator+2:]
+
+	logPath := os.Getenv("GG_TEST_COMMAND_LOG")
+	if logPath != "" {
+		file, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		defer file.Close()
+
+		line := name
+		if len(cmdArgs) > 0 {
+			line += "\t" + strings.Join(cmdArgs, "\t")
+		}
+		if _, err := fmt.Fprintln(file, line); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+	}
+
+	os.Exit(0)
 }

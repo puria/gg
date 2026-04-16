@@ -36,11 +36,11 @@ func run(args []string) error {
 		return nil
 	case args[0] == "alias":
 		return aliasCommand(args[1:])
-	case args[0] == "list":
+	case args[0] == "list" || args[0] == "ls":
 		return listCommand(args[1:])
 	case args[0] == "status":
 		return statusCommand(args[1:])
-	case args[0] == "prune":
+	case args[0] == "prune" || args[0] == "rm":
 		return pruneCommand(args[1:])
 	case args[0] == "init-config":
 		return initConfigCommand()
@@ -97,10 +97,15 @@ Usage:
   gg alias <target> <name>
   gg list <owner/repo>
   gg list <owner> <repo>
+  gg ls <owner/repo>
+  gg ls <owner> <repo>
   gg status <owner/repo>
   gg status <owner> <repo>
+  gg status --files <owner/repo>
   gg prune <owner/repo>
   gg prune <owner> <repo>
+  gg rm <owner/repo>
+  gg rm <owner> <repo>
   gg config-path
   gg init-config
   gg shell-init fish|bash|zsh
@@ -115,7 +120,8 @@ Behavior:
   - uses <repo>/main as the default checkout path
   - can create repo worktrees under <repo>/worktrees/<name>
   - can check out PRs under <repo>/PR/<number>
-  - can list, inspect status, and prune managed repo worktrees
+  - supports ls/list, status, and rm/prune for managed repo worktrees
+  - status prints branch plus clean/dirty summary; use --files for changed paths
   - prints the target local path
 `)
 }
