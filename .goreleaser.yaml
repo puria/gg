@@ -23,7 +23,10 @@ builds:
 archives:
   - id: binaries
     builds: [gg]
-    format: binary
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
     name_template: >-
       gg-{{- if eq .Os "linux" -}}Linux
          {{- else if eq .Os "darwin" -}}Darwin
