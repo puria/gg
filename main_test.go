@@ -710,7 +710,7 @@ func readCommandLog(t *testing.T) []string {
 	return strings.Split(content, "\n")
 }
 
-func TestHelperProcess(t *testing.T) {
+func TestHelperProcess(t *testing.T) { //nolint:unparam
 	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
 		return
 	}
@@ -738,7 +738,7 @@ func TestHelperProcess(t *testing.T) {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
 		}
-		defer file.Close()
+		defer file.Close() //nolint:errcheck
 
 		line := name
 		if len(cmdArgs) > 0 {

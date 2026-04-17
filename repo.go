@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-var execCommand = exec.Command
+var execCommand = exec.Command //nolint:gochecknoglobals
 
 type Repo struct {
 	Owner string

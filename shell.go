@@ -7,7 +7,7 @@ import (
 	"strconv"
 )
 
-var executablePath = os.Executable
+var executablePath = os.Executable //nolint:gochecknoglobals
 
 func shellInit(shell string) (string, error) {
 	bin, err := executablePath()
