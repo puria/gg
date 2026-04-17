@@ -3857,7 +3857,7 @@ func TestEnsureWorktreeDefaultBaseRefFailure(t *testing.T) {
 			env = append(env, "GG_TEST_COMMAND_STDOUT=refs/heads/main")
 		case slices.Contains(args, "rev-parse"):
 			env = append(env, "GG_TEST_COMMAND_EXIT=1")
-		// symbolic-ref: falls through to empty stdout, exit 0.
+			// symbolic-ref: falls through to empty stdout, exit 0.
 		}
 		cmd.Env = env
 		return cmd
