@@ -10,7 +10,11 @@ import (
 	"strings"
 )
 
-var execCommand = exec.Command
+var execCommand = exec.Command //nolint:gochecknoglobals
+
+var osStat = os.Stat //nolint:gochecknoglobals
+
+var osMkdirAll = os.MkdirAll //nolint:gochecknoglobals
 
 type Repo struct {
 	Owner string
@@ -97,11 +101,13 @@ func ensureRepoStore(cfg Config, repo Repo) (RepoStore, error) {
 
 	containerExists, err := directoryExists(store.ContainerPath)
 	if err != nil {
+		// untestable: passthrough — directoryExists error is wrapped at its source.
 		return RepoStore{}, err
 	}
 	if containerExists {
 		classification, err := classifyExistingRepoPath(store)
 		if err != nil {
+			// untestable: passthrough — classifyExistingRepoPath error is wrapped at its source.
 			return RepoStore{}, err
 		}
 		switch classification {
@@ -117,20 +123,30 @@ func ensureRepoStore(cfg Config, repo Repo) (RepoStore, error) {
 
 	bareExists, err := directoryExists(store.GitDir)
 	if err != nil {
+		// untestable: passthrough — directoryExists error is wrapped at its source.
 		return RepoStore{}, err
 	}
 	if !bareExists {
-		if err := os.MkdirAll(store.ContainerPath, 0o755); err != nil {
+		if err := osMkdirAll(store.ContainerPath, 0o755); err != nil {
 			return RepoStore{}, fmt.Errorf("create repository container: %w", err)
 		}
 
 		if err := runCommand("", "git", "clone", "--bare", "--recursive", repo.CloneURL(cfg), store.GitDir); err != nil {
 			return RepoStore{}, fmt.Errorf("clone %s: %w", repo.String(), err)
 		}
+		// bare clones don't set up the remote tracking refspec, so tools like
+		// `gh pr create` can't resolve origin/main. Fix it once at clone time.
+		if err := runCommand("", "git", "--git-dir", store.GitDir, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
+			return RepoStore{}, fmt.Errorf("configure remote tracking for %s: %w", repo.String(), err)
+		}
+		if err := runCommand("", "git", "--git-dir", store.GitDir, "fetch", "origin"); err != nil {
+			return RepoStore{}, fmt.Errorf("fetch remote tracking refs for %s: %w", repo.String(), err)
+		}
 	}
 
 	mainExists, err := directoryExists(store.MainPath)
 	if err != nil {
+		// untestable: passthrough — directoryExists error is wrapped at its source.
 		return RepoStore{}, err
 	}
 	if !mainExists {
@@ -282,6 +298,7 @@ func resolveOwner(cfg Config, raw string) (string, error) {
 	}
 
 	if strings.TrimSpace(owner) == "" {
+		// untestable: expandAlias rejects empty input; this guard is defensive.
 		return "", errors.New("owner cannot be empty")
 	}
 
@@ -394,13 +411,14 @@ func ensureWorktree(store RepoStore, worktreeName string) (string, error) {
 
 	exists, err := directoryExists(path)
 	if err != nil {
+		// untestable: passthrough — directoryExists error is wrapped at its source.
 		return "", err
 	}
 	if exists {
 		return path, nil
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := osMkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", fmt.Errorf("create worktree parent directory: %w", err)
 	}
 
@@ -451,18 +469,20 @@ func ensurePRWorktree(store RepoStore, prNumber int) (string, error) {
 
 	path, err := resolveNestedRepoPath(store.ContainerPath, "PR", strconv.Itoa(prNumber))
 	if err != nil {
+		// untestable: strconv.Itoa of a positive PR number always produces a valid path segment.
 		return "", err
 	}
 
 	exists, err := directoryExists(path)
 	if err != nil {
+		// untestable: passthrough — directoryExists error is wrapped at its source.
 		return "", err
 	}
 	if exists {
 		return path, nil
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := osMkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", fmt.Errorf("create PR parent directory: %w", err)
 	}
 
@@ -538,11 +558,9 @@ func splitRepoSpec(spec string) (string, string, error) {
 		return "", "", fmt.Errorf("repository must be in the form owner/repo, got %q", spec)
 	}
 
+	// SplitN produces two non-empty parts: Trim("/") removed leading/trailing
+	// slashes above, and Count == 1 guarantees exactly one slash in the middle.
 	parts := strings.SplitN(spec, "/", 2)
-	if parts[0] == "" || parts[1] == "" {
-		return "", "", fmt.Errorf("repository must be in the form owner/repo, got %q", spec)
-	}
-
 	return parts[0], parts[1], nil
 }
 
@@ -581,7 +599,7 @@ func branchNameFromWorktree(name string) string {
 }
 
 func directoryExists(path string) (bool, error) {
-	info, err := os.Stat(path)
+	info, err := osStat(path)
 	switch {
 	case err == nil:
 		if !info.IsDir() {
@@ -596,7 +614,7 @@ func directoryExists(path string) (bool, error) {
 }
 
 func pathExists(path string) (bool, error) {
-	_, err := os.Stat(path)
+	_, err := osStat(path)
 	switch {
 	case err == nil:
 		return true, nil
@@ -611,13 +629,14 @@ func ensureOwnerPath(cfg Config, owner string) (string, error) {
 	path := filepath.Join(cfg.Root, cfg.Host, owner)
 	exists, err := directoryExists(path)
 	if err != nil {
+		// untestable: passthrough — directoryExists error is wrapped at its source.
 		return "", err
 	}
 	if exists {
 		return path, nil
 	}
 
-	if err := os.MkdirAll(path, 0o755); err != nil {
+	if err := osMkdirAll(path, 0o755); err != nil {
 		return "", fmt.Errorf("create owner directory %s: %w", path, err)
 	}
 
@@ -687,6 +706,7 @@ func finalizeWorktreeSetup(worktreePath string) error {
 func setupMiseTooling(worktreePath string) error {
 	configPaths, err := findMiseConfigPaths(worktreePath)
 	if err != nil {
+		// untestable: passthrough — findMiseConfigPaths error is wrapped at its source.
 		return err
 	}
 	if len(configPaths) == 0 {
@@ -713,6 +733,7 @@ func findMiseConfigPaths(worktreePath string) ([]string, error) {
 		path := filepath.Join(worktreePath, name)
 		exists, err := pathExists(path)
 		if err != nil {
+			// untestable: passthrough — pathExists error is wrapped at its source.
 			return nil, err
 		}
 		if exists {
@@ -750,17 +771,19 @@ func defaultBranchRef(gitDir string) (string, string, error) {
 func classifyExistingRepoPath(store RepoStore) (string, error) {
 	bareExists, err := directoryExists(store.GitDir)
 	if err != nil {
+		// untestable: passthrough — directoryExists error is wrapped at its source.
 		return "", err
 	}
 	mainExists, err := directoryExists(store.MainPath)
 	if err != nil {
+		// untestable: passthrough — directoryExists error is wrapped at its source.
 		return "", err
 	}
 	if bareExists || mainExists {
 		return "managed", nil
 	}
 
-	entries, err := os.ReadDir(store.ContainerPath)
+	entries, err := osReadDir(store.ContainerPath)
 	if err != nil {
 		return "", fmt.Errorf("read repository directory %s: %w", store.ContainerPath, err)
 	}

@@ -1,0 +1,44 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: gg
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: binaries
+    builds: [gg]
+    format: binary
+    name_template: >-
+      gg-{{- if eq .Os "linux" -}}Linux
+         {{- else if eq .Os "darwin" -}}Darwin
+         {{- else if eq .Os "windows" -}}Windows
+         {{- else -}}{{ .Os }}{{- end -}}-{{- if eq .Arch "amd64" -}}x86_64
+      {{- else if and (eq .Os "linux") (eq .Arch "arm64") -}}aarch64
+      {{- else if and (eq .Os "darwin") (eq .Arch "arm64") -}}arm64
+      {{- else -}}{{ .Arch }}{{- end -}}
+
+checksum:
+  name_template: "{{ .ProjectName }}_v{{ .Version }}_checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"

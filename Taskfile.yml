@@ -3,6 +3,10 @@ version: "3"
 vars:
   BIN_DIR: bin
   BIN_NAME: gg
+  BUILD_VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+  GO_LDFLAGS: "-s -w -X main.version={{.BUILD_VERSION}}"
+  COVERAGE_MIN: "95"
 
 tasks:
   default:
@@ -13,9 +17,32 @@ tasks:
     desc: Compile the gg binary into ./bin
     cmds:
       - mkdir -p {{.BIN_DIR}}
-      - go build -o {{.BIN_DIR}}/{{.BIN_NAME}} .
+      - go build -ldflags "{{.GO_LDFLAGS}}" -o {{.BIN_DIR}}/{{.BIN_NAME}} .
 
   test:
-    desc: Run the Go test suite
+    desc: Run the Go test suite with coverage gate ({{.COVERAGE_MIN}}%)
     cmds:
-      - go test ./...
+      - go test ./... -covermode=atomic -coverprofile=coverage.out
+      - >-
+        go tool cover -func=coverage.out | awk -v min="{{.COVERAGE_MIN}}" '/^total:/ {
+          gsub("%", "", $3)
+          printf "Total coverage: %s%% (required: %s%%)\n", $3, min
+          if (($3 + 0) < (min + 0)) exit 1
+        }'
+
+  lint:
+    desc: Run gofmt check and golangci-lint
+    cmds:
+      - |
+        unformatted=$(gofmt -l .)
+        if [ -n "$unformatted" ]; then
+          echo "Not gofmt-formatted:"
+          echo "$unformatted"
+          exit 1
+        fi
+      - golangci-lint run ./...
+
+  vuln:
+    desc: Run govulncheck for known vulnerabilities
+    cmds:
+      - govulncheck ./...

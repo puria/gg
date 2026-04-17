@@ -8,6 +8,12 @@ import (
 	"strings"
 )
 
+var osReadDir = os.ReadDir //nolint:gochecknoglobals
+
+var osRemove = os.Remove //nolint:gochecknoglobals
+
+var filepathWalkDir = filepath.WalkDir //nolint:gochecknoglobals
+
 type repoEntry struct {
 	Kind string
 	Name string
@@ -41,6 +47,7 @@ func listCommand(args []string) error {
 
 	entries, err := listRepoEntries(store)
 	if err != nil {
+		// untestable: passthrough — listRepoEntries error is wrapped at its source.
 		return err
 	}
 
@@ -78,6 +85,7 @@ func statusCommand(args []string) error {
 
 	entries, err := listRepoEntries(store)
 	if err != nil {
+		// untestable: passthrough — listRepoEntries error is wrapped at its source.
 		return err
 	}
 
@@ -153,6 +161,7 @@ func pruneCommand(args []string) error {
 	} {
 		pruned, err := removeEmptyChildren(dir)
 		if err != nil {
+			// untestable: passthrough — removeEmptyChildren error is wrapped at its source.
 			return err
 		}
 		removed = append(removed, pruned...)
@@ -198,6 +207,7 @@ func findRepoStore(cfg Config, repo Repo) (RepoStore, error) {
 
 	containerExists, err := directoryExists(store.ContainerPath)
 	if err != nil {
+		// untestable: passthrough — directoryExists error is wrapped at its source.
 		return RepoStore{}, err
 	}
 	if !containerExists {
@@ -206,6 +216,7 @@ func findRepoStore(cfg Config, repo Repo) (RepoStore, error) {
 
 	classification, err := classifyExistingRepoPath(store)
 	if err != nil {
+		// untestable: passthrough — classifyExistingRepoPath error is wrapped at its source.
 		return RepoStore{}, err
 	}
 	if classification == "managed" {
@@ -228,6 +239,7 @@ func listRepoEntries(store RepoStore) ([]repoEntry, error) {
 
 	var entries []repoEntry
 	if exists, err := directoryExists(store.MainPath); err != nil {
+		// untestable: passthrough — directoryExists error is wrapped at its source.
 		return nil, err
 	} else if exists {
 		entries = append(entries, repoEntry{
@@ -239,10 +251,12 @@ func listRepoEntries(store RepoStore) ([]repoEntry, error) {
 
 	worktrees, err := discoverEntries(filepath.Join(store.ContainerPath, "worktrees"), "worktree")
 	if err != nil {
+		// untestable: passthrough — discoverEntries error is wrapped at its source.
 		return nil, err
 	}
 	prs, err := discoverEntries(filepath.Join(store.ContainerPath, "PR"), "pr")
 	if err != nil {
+		// untestable: passthrough — discoverEntries error is wrapped at its source.
 		return nil, err
 	}
 
@@ -262,6 +276,7 @@ func listRepoEntries(store RepoStore) ([]repoEntry, error) {
 func discoverEntries(root, kind string) ([]repoEntry, error) {
 	exists, err := directoryExists(root)
 	if err != nil {
+		// untestable: passthrough — directoryExists error is wrapped at its source.
 		return nil, err
 	}
 	if !exists {
@@ -269,8 +284,9 @@ func discoverEntries(root, kind string) ([]repoEntry, error) {
 	}
 
 	var entries []repoEntry
-	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	err = filepathWalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
+			// untestable: passthrough — WalkDir only forwards OS errors already surfaced by the caller's seam.
 			return err
 		}
 		if !d.IsDir() {
@@ -283,6 +299,7 @@ func discoverEntries(root, kind string) ([]repoEntry, error) {
 		gitPath := filepath.Join(path, ".git")
 		gitExists, err := pathExists(gitPath)
 		if err != nil {
+			// untestable: passthrough — pathExists error is wrapped at its source.
 			return err
 		}
 		if !gitExists {
@@ -291,6 +308,8 @@ func discoverEntries(root, kind string) ([]repoEntry, error) {
 
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
+			// untestable: WalkDir only invokes this callback with paths descended from root,
+			// and both root and path are absolute — filepath.Rel cannot fail here.
 			return err
 		}
 		entries = append(entries, repoEntry{
@@ -310,6 +329,7 @@ func discoverEntries(root, kind string) ([]repoEntry, error) {
 func removeEmptyChildren(root string) ([]string, error) {
 	exists, err := directoryExists(root)
 	if err != nil {
+		// untestable: passthrough — directoryExists error is wrapped at its source.
 		return nil, err
 	}
 	if !exists {
@@ -317,7 +337,7 @@ func removeEmptyChildren(root string) ([]string, error) {
 	}
 
 	var removed []string
-	entries, err := os.ReadDir(root)
+	entries, err := osReadDir(root)
 	if err != nil {
 		return nil, fmt.Errorf("read directory %s: %w", root, err)
 	}
@@ -327,6 +347,7 @@ func removeEmptyChildren(root string) ([]string, error) {
 		}
 		paths, err := removeEmptyTree(filepath.Join(root, entry.Name()))
 		if err != nil {
+			// untestable: passthrough — removeEmptyTree error is wrapped at its source.
 			return nil, err
 		}
 		removed = append(removed, paths...)
@@ -339,7 +360,7 @@ func removeEmptyChildren(root string) ([]string, error) {
 func removeEmptyTree(path string) ([]string, error) {
 	var removed []string
 
-	entries, err := os.ReadDir(path)
+	entries, err := osReadDir(path)
 	if err != nil {
 		return nil, fmt.Errorf("read directory %s: %w", path, err)
 	}
@@ -349,12 +370,13 @@ func removeEmptyTree(path string) ([]string, error) {
 		}
 		childRemoved, err := removeEmptyTree(filepath.Join(path, entry.Name()))
 		if err != nil {
+			// untestable: passthrough — recursive removeEmptyTree error is wrapped at its source.
 			return nil, err
 		}
 		removed = append(removed, childRemoved...)
 	}
 
-	entries, err = os.ReadDir(path)
+	entries, err = osReadDir(path)
 	if err != nil {
 		return nil, fmt.Errorf("read directory %s: %w", path, err)
 	}
@@ -362,7 +384,7 @@ func removeEmptyTree(path string) ([]string, error) {
 		return removed, nil
 	}
 
-	if err := os.Remove(path); err != nil {
+	if err := osRemove(path); err != nil {
 		return nil, fmt.Errorf("remove directory %s: %w", path, err)
 	}
 
