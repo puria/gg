@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -135,6 +136,21 @@ func initConfigCommand() error {
 }
 
 func aliasCommand(args []string) error {
+	if len(args) == 0 {
+		cfg, _, err := loadConfig()
+		if err != nil {
+			return err
+		}
+		names := make([]string, 0, len(cfg.Aliases))
+		for name := range cfg.Aliases {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			fmt.Printf("%-20s -> %s\n", name, cfg.Aliases[name])
+		}
+		return nil
+	}
 	if len(args) != 2 {
 		return errors.New("usage: gg alias <target> <name>")
 	}

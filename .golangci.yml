@@ -1,0 +1,19 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gochecknoglobals
+    - misspell
+    - unconvert
+    - unparam
+    - wastedassign
+
+linters-settings:
+  gochecknoglobals:
+    check-tests: false

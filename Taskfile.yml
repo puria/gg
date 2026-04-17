@@ -3,6 +3,9 @@ version: "3"
 vars:
   BIN_DIR: bin
   BIN_NAME: gg
+  BUILD_VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+  GO_LDFLAGS: "-s -w -X main.version={{.BUILD_VERSION}}"
 
 tasks:
   default:
@@ -13,7 +16,7 @@ tasks:
     desc: Compile the gg binary into ./bin
     cmds:
       - mkdir -p {{.BIN_DIR}}
-      - go build -o {{.BIN_DIR}}/{{.BIN_NAME}} .
+      - go build -ldflags "{{.GO_LDFLAGS}}" -o {{.BIN_DIR}}/{{.BIN_NAME}} .
 
   test:
     desc: Run the Go test suite
