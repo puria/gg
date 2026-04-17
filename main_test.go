@@ -470,6 +470,9 @@ func TestShellInitPassesThroughManagementAliases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("shellInit(fish) error = %v", err)
 	}
+	if !strings.Contains(fishScript, "case \"\"") {
+		t.Fatalf("fish shell script missing empty-arg passthrough: %q", fishScript)
+	}
 	if !strings.Contains(fishScript, "list ls status prune rm") {
 		t.Fatalf("fish shell script missing ls/rm passthrough: %q", fishScript)
 	}
@@ -1089,15 +1092,29 @@ func TestRunPathDispatch(t *testing.T) {
 		}
 	})
 
-	t.Run("no args produces usage error", func(t *testing.T) {
-		_, err := captureStdout(t, func() error {
+	t.Run("no args lists aliases", func(t *testing.T) {
+		configPath := filepath.Join(t.TempDir(), "config")
+		t.Setenv("GG_CONFIG", configPath)
+		t.Setenv("HOME", t.TempDir())
+		if err := os.WriteFile(configPath, []byte(`{"aliases":{"fc":"ForkbombEu/credimi","f":"ForkbombEu"}}`), 0o644); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+
+		output, err := captureStdout(t, func() error {
 			return run(nil)
 		})
-		if err == nil {
-			t.Fatal("run(nil) error = nil, want usage error")
+		if err != nil {
+			t.Fatalf("run(nil) error = %v", err)
 		}
-		if !strings.Contains(err.Error(), "usage:") {
-			t.Fatalf("run(nil) error = %q, want substring %q", err.Error(), "usage:")
+		lines := strings.Split(strings.TrimSpace(output), "\n")
+		if len(lines) != 2 {
+			t.Fatalf("len(lines) = %d, want 2 (%v)", len(lines), lines)
+		}
+		if !strings.HasPrefix(lines[0], "f") || !strings.HasSuffix(lines[0], "-> ForkbombEu") {
+			t.Fatalf("line[0] = %q, want owner alias entry", lines[0])
+		}
+		if !strings.HasPrefix(lines[1], "fc") || !strings.HasSuffix(lines[1], "-> ForkbombEu/credimi") {
+			t.Fatalf("line[1] = %q, want repo alias entry", lines[1])
 		}
 	})
 }
@@ -2468,6 +2485,26 @@ func TestAliasCommandLoadErrors(t *testing.T) {
 
 }
 
+func TestAliasCommandWriteConfigError(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config")
+	t.Setenv("GG_CONFIG", configPath)
+	t.Setenv("HOME", t.TempDir())
+
+	oldWriteFile := osWriteFile
+	defer func() { osWriteFile = oldWriteFile }()
+	osWriteFile = func(string, []byte, os.FileMode) error {
+		return errors.New("simulated write failure")
+	}
+
+	err := aliasCommand([]string{"ForkbombEu/credimi", "fc"})
+	if err == nil {
+		t.Fatal("aliasCommand() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "write config") {
+		t.Fatalf("error = %q, want substring %q", err.Error(), "write config")
+	}
+}
+
 func TestLoadConfigEmptyFileReturnsDefaults(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config")
 	if err := os.WriteFile(configPath, []byte("   \n\t"), 0o644); err != nil {
@@ -2832,6 +2869,17 @@ func TestTryResolveStandaloneRepoSlashMalformed(t *testing.T) {
 	}
 }
 
+func TestTryResolveStandaloneRepoNoSlashMiss(t *testing.T) {
+	cfg := Config{Host: "github.com"}
+	_, ok, err := tryResolveStandaloneRepo(cfg, "owner")
+	if err != nil {
+		t.Fatalf("tryResolveStandaloneRepo() error = %v", err)
+	}
+	if ok {
+		t.Fatal("tryResolveStandaloneRepo() ok = true, want false")
+	}
+}
+
 func TestDirectoryExistsRejectsFile(t *testing.T) {
 	filePath := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(filePath, []byte{}, 0o644); err != nil {
@@ -3036,6 +3084,27 @@ func TestSetupMiseToolingTrustFailure(t *testing.T) {
 	}
 }
 
+func TestSetupMiseToolingFindConfigError(t *testing.T) {
+	worktree := t.TempDir()
+
+	oldStat := osStat
+	defer func() { osStat = oldStat }()
+	osStat = func(path string) (os.FileInfo, error) {
+		if path == filepath.Join(worktree, "mise.toml") {
+			return nil, errors.New("simulated stat failure")
+		}
+		return os.Stat(path)
+	}
+
+	err := setupMiseTooling(worktree)
+	if err == nil {
+		t.Fatal("setupMiseTooling() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "stat") {
+		t.Fatalf("error = %q, want stat error", err.Error())
+	}
+}
+
 func TestSetupMiseToolingHandlesBothConfigs(t *testing.T) {
 	worktree := t.TempDir()
 	for _, name := range []string{"mise.toml", ".mise.toml"} {
@@ -3098,6 +3167,26 @@ func TestClassifyExistingRepoPathLocal(t *testing.T) {
 	}
 	if got != "local" {
 		t.Fatalf("classifyExistingRepoPath() = %q, want %q", got, "local")
+	}
+}
+
+func TestClassifyExistingRepoPathManaged(t *testing.T) {
+	container := t.TempDir()
+	store := RepoStore{
+		ContainerPath: container,
+		GitDir:        filepath.Join(container, ".bare"),
+		MainPath:      filepath.Join(container, "main"),
+	}
+	if err := os.MkdirAll(store.GitDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	got, err := classifyExistingRepoPath(store)
+	if err != nil {
+		t.Fatalf("classifyExistingRepoPath() error = %v", err)
+	}
+	if got != "managed" {
+		t.Fatalf("classifyExistingRepoPath() = %q, want %q", got, "managed")
 	}
 }
 
@@ -4670,5 +4759,47 @@ func TestDiscoverEntriesWalkDirError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "scan ") {
 		t.Fatalf("error = %q, want substring %q", err.Error(), "scan ")
+	}
+}
+
+func TestDiscoverEntriesDirectoryExistsError(t *testing.T) {
+	root := t.TempDir()
+
+	oldStat := osStat
+	defer func() { osStat = oldStat }()
+	osStat = func(path string) (os.FileInfo, error) {
+		if path == root {
+			return nil, errors.New("simulated stat failure")
+		}
+		return os.Stat(path)
+	}
+
+	_, err := discoverEntries(root, "worktree")
+	if err == nil {
+		t.Fatal("discoverEntries() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "stat "+root) {
+		t.Fatalf("error = %q, want substring %q", err.Error(), "stat "+root)
+	}
+}
+
+func TestRemoveEmptyChildrenDirectoryExistsError(t *testing.T) {
+	root := t.TempDir()
+
+	oldStat := osStat
+	defer func() { osStat = oldStat }()
+	osStat = func(path string) (os.FileInfo, error) {
+		if path == root {
+			return nil, errors.New("simulated stat failure")
+		}
+		return os.Stat(path)
+	}
+
+	_, err := removeEmptyChildren(root)
+	if err == nil {
+		t.Fatal("removeEmptyChildren() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "stat "+root) {
+		t.Fatalf("error = %q, want substring %q", err.Error(), "stat "+root)
 	}
 }

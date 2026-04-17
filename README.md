@@ -78,6 +78,8 @@ you can just run:
 gg credim
 ```
 
+Running `gg` with no arguments prints the configured aliases.
+
 If the repo is missing, `gg` creates the repo container and checks out the default branch into `main/`. If it already exists, the shell wrapper `cd`s into `<repo>/main`.
 
 If you pass just an owner like `gg ForkbombEu` or an owner alias like `gg f`, `gg` goes to `<root>/<host>/<owner>`.
@@ -154,8 +156,13 @@ Or inline:
 
 ```fish
 function gg --description 'manage git repos'
+    if test (count $argv) -eq 0
+        command gg
+        return $status
+    end
+
     switch "$argv[1]"
-    case help -h --help version --version shell-init config-path init-config path alias
+    case help -h --help version --version shell-init config-path init-config path alias list ls status prune rm
         command gg $argv
         return $status
     end

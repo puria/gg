@@ -19,7 +19,7 @@ func main() {
 func run(args []string) error {
 	switch {
 	case len(args) == 0:
-		return pathCommand(nil)
+		return aliasCommand(nil)
 	case args[0] == "help" || args[0] == "-h" || args[0] == "--help":
 		printUsage()
 		return nil
@@ -84,6 +84,7 @@ func printUsage() {
 	fmt.Print(`gg resolves a GitHub repository to a local checkout path.
 
 Usage:
+  gg
   gg <owner>
   gg <owner/repo>
   gg <owner> <repo>
@@ -114,6 +115,7 @@ Usage:
 
 Behavior:
   - reads config from $XDG_CONFIG_HOME/gg/config or ~/.config/gg/config
+  - with no arguments, lists configured aliases
   - expands aliases from config
   - can persist aliases with 'gg alias <target> <name>'
   - clones missing repositories into a bare repo container
