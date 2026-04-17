@@ -6,7 +6,7 @@ vars:
   BUILD_VERSION:
     sh: git describe --tags --always --dirty 2>/dev/null || echo dev
   GO_LDFLAGS: "-s -w -X main.version={{.BUILD_VERSION}}"
-  COVERAGE_MIN: "41"
+  COVERAGE_MIN: "95"
 
 tasks:
   default:

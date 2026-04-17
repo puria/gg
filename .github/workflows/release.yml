@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  COVERAGE_MIN: "41"
+  COVERAGE_MIN: "95"
 
 jobs:
   lint:
@@ -56,7 +56,7 @@ jobs:
           go-package: ./...
 
   test:
-    name: ✅ Test (${{ env.COVERAGE_MIN }}% coverage)
+    name: ✅ Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
