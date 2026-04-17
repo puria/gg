@@ -13,6 +13,3 @@ linters:
     - unconvert
     - unparam
     - wastedassign
-  settings:
-    gochecknoglobals:
-      check-tests: false
