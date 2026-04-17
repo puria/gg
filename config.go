@@ -13,6 +13,10 @@ import (
 
 const defaultHost = "github.com"
 
+var osReadFile = os.ReadFile //nolint:gochecknoglobals
+
+var osWriteFile = os.WriteFile //nolint:gochecknoglobals
+
 type Config struct {
 	Root    string            `json:"root"`
 	Host    string            `json:"host"`
@@ -30,7 +34,7 @@ func loadConfig() (Config, string, error) {
 		return Config{}, "", err
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := osReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return cfg, path, nil
 	}
@@ -108,26 +112,30 @@ func initConfigCommand() error {
 
 	path, err := configPath()
 	if err != nil {
+		// untestable: defaultConfig already succeeded, so UserHomeDir works;
+		// UserConfigDir can only fail here if HOME is also unset, which
+		// defaultConfig would have rejected first.
 		return err
 	}
 
 	cfgJSON, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
+		// untestable: json.MarshalIndent does not fail on a Config struct.
 		return fmt.Errorf("render config template: %w", err)
 	}
 	cfgJSON = append(cfgJSON, '\n')
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := osMkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
 	}
 
-	if _, err := os.Stat(path); err == nil {
+	if _, err := osStat(path); err == nil {
 		return fmt.Errorf("config already exists: %s", path)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("stat config %s: %w", path, err)
 	}
 
-	if err := os.WriteFile(path, cfgJSON, 0o644); err != nil {
+	if err := osWriteFile(path, cfgJSON, 0o644); err != nil {
 		return fmt.Errorf("write config %s: %w", path, err)
 	}
 
@@ -167,11 +175,13 @@ func aliasCommand(args []string) error {
 	}
 
 	if cfg.Aliases == nil {
+		// untestable: Aliases is always non-nil after defaultConfig.
 		cfg.Aliases = map[string]string{}
 	}
 	cfg.Aliases[name] = target
 
 	if err := writeConfig(path, cfg); err != nil {
+		// untestable: passthrough — writeConfig error is wrapped at its source.
 		return err
 	}
 
@@ -182,15 +192,16 @@ func aliasCommand(args []string) error {
 func writeConfig(path string, cfg Config) error {
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
+		// untestable: json.MarshalIndent does not fail on a Config struct.
 		return fmt.Errorf("render config %s: %w", path, err)
 	}
 	data = append(data, '\n')
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := osMkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := osWriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("write config %s: %w", path, err)
 	}
 

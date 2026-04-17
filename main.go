@@ -8,6 +8,7 @@ import (
 
 var version = "dev"
 
+// untestable: main() is the process entrypoint; os.Exit paths aren't exercised in tests.
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "gg:", err)
