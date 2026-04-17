@@ -947,7 +947,7 @@ func TestCanonicalizeSegment(t *testing.T) {
 	})
 }
 
-func setupTestConfig(t *testing.T) (Config, string) {
+func setupTestConfig(t *testing.T) Config {
 	t.Helper()
 	root := t.TempDir()
 	configPath := filepath.Join(t.TempDir(), "config")
@@ -957,7 +957,7 @@ func setupTestConfig(t *testing.T) (Config, string) {
 		Root: filepath.Join(root, "src"),
 		Host: "github.com",
 	}
-	return cfg, configPath
+	return cfg
 }
 
 func TestRunHelpVariants(t *testing.T) {
@@ -1054,7 +1054,7 @@ func TestRunShellInitVariants(t *testing.T) {
 }
 
 func TestRunPathDispatch(t *testing.T) {
-	cfg, _ := setupTestConfig(t)
+	cfg := setupTestConfig(t)
 
 	containerPath := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
 	mainPath := filepath.Join(containerPath, "main")
@@ -1309,7 +1309,7 @@ func TestFindRepoStore(t *testing.T) {
 }
 
 func TestListCommand(t *testing.T) {
-	cfg, _ := setupTestConfig(t)
+	cfg := setupTestConfig(t)
 
 	container := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
 	for _, dir := range []string{
@@ -1360,7 +1360,7 @@ func TestListCommand(t *testing.T) {
 }
 
 func TestListCommandLocal(t *testing.T) {
-	cfg, _ := setupTestConfig(t)
+	cfg := setupTestConfig(t)
 
 	container := filepath.Join(cfg.Root, cfg.Host, "owner", "local")
 	if err := os.MkdirAll(container, 0o755); err != nil {
@@ -1382,7 +1382,7 @@ func TestListCommandLocal(t *testing.T) {
 }
 
 func TestStatusCommandClean(t *testing.T) {
-	cfg, _ := setupTestConfig(t)
+	cfg := setupTestConfig(t)
 
 	container := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
 	mainPath := filepath.Join(container, "main")
@@ -1416,7 +1416,7 @@ func TestStatusCommandClean(t *testing.T) {
 }
 
 func TestStatusCommandDirtyWithFiles(t *testing.T) {
-	cfg, _ := setupTestConfig(t)
+	cfg := setupTestConfig(t)
 
 	container := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
 	mainPath := filepath.Join(container, "main")
@@ -1447,7 +1447,7 @@ func TestStatusCommandDirtyWithFiles(t *testing.T) {
 }
 
 func TestStatusCommandDirtyWithoutFiles(t *testing.T) {
-	cfg, _ := setupTestConfig(t)
+	cfg := setupTestConfig(t)
 
 	container := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
 	mainPath := filepath.Join(container, "main")
@@ -1491,7 +1491,7 @@ func TestStatusCommandMissingRepo(t *testing.T) {
 }
 
 func TestPruneCommandNothingToPrune(t *testing.T) {
-	cfg, _ := setupTestConfig(t)
+	cfg := setupTestConfig(t)
 
 	container := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
 	if err := os.MkdirAll(filepath.Join(container, ".bare"), 0o755); err != nil {
@@ -1518,7 +1518,7 @@ func TestPruneCommandNothingToPrune(t *testing.T) {
 }
 
 func TestPruneCommandRemovesEmptyChildren(t *testing.T) {
-	cfg, _ := setupTestConfig(t)
+	cfg := setupTestConfig(t)
 
 	container := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
 	emptyWorktree := filepath.Join(container, "worktrees", "feature-x")
@@ -1558,7 +1558,7 @@ func TestPruneCommandRemovesEmptyChildren(t *testing.T) {
 }
 
 func TestPruneCommandRejectsLocalRepo(t *testing.T) {
-	cfg, _ := setupTestConfig(t)
+	cfg := setupTestConfig(t)
 
 	container := filepath.Join(cfg.Root, cfg.Host, "owner", "local")
 	if err := os.MkdirAll(container, 0o755); err != nil {
@@ -1694,11 +1694,11 @@ func TestCloneURL(t *testing.T) {
 	}
 }
 
-func seedBareRepo(t *testing.T) (gitDir string, mainPath string, containerPath string) {
+func seedBareRepo(t *testing.T) (gitDir string, containerPath string) {
 	t.Helper()
 	containerPath = t.TempDir()
 	gitDir = filepath.Join(containerPath, ".bare")
-	mainPath = filepath.Join(containerPath, "main")
+	mainPath := filepath.Join(containerPath, "main")
 
 	runGit(t, "", "init", "--bare", gitDir)
 	runGit(t, "", "--git-dir", gitDir, "worktree", "add", "--orphan", "-b", "main", mainPath)
@@ -1709,7 +1709,7 @@ func seedBareRepo(t *testing.T) (gitDir string, mainPath string, containerPath s
 	}
 	runGit(t, mainPath, "add", "README.md")
 	runGit(t, mainPath, "commit", "-m", "seed")
-	return gitDir, mainPath, containerPath
+	return gitDir, containerPath
 }
 
 func runGit(t *testing.T, dir string, args ...string) {
@@ -1774,7 +1774,7 @@ func TestValidateBranchName(t *testing.T) {
 }
 
 func TestLocalBranchExists(t *testing.T) {
-	gitDir, _, _ := seedBareRepo(t)
+	gitDir, _ := seedBareRepo(t)
 
 	t.Run("existing branch", func(t *testing.T) {
 		exists, err := localBranchExists(gitDir, "main")
@@ -1809,7 +1809,7 @@ func TestLocalBranchExists(t *testing.T) {
 
 func TestDefaultBranchRef(t *testing.T) {
 	t.Run("bare main with commits", func(t *testing.T) {
-		gitDir, _, _ := seedBareRepo(t)
+		gitDir, _ := seedBareRepo(t)
 		branch, ref, err := defaultBranchRef(gitDir)
 		if err != nil {
 			t.Fatalf("defaultBranchRef() error = %v", err)
@@ -1820,7 +1820,7 @@ func TestDefaultBranchRef(t *testing.T) {
 	})
 
 	t.Run("origin HEAD set", func(t *testing.T) {
-		gitDir, _, _ := seedBareRepo(t)
+		gitDir, _ := seedBareRepo(t)
 		runGit(t, "", "--git-dir", gitDir, "update-ref", "refs/remotes/origin/main", "refs/heads/main")
 		runGit(t, "", "--git-dir", gitDir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
 
@@ -1847,7 +1847,7 @@ func TestDefaultBranchRef(t *testing.T) {
 }
 
 func TestDefaultBaseRefMirrorsBranch(t *testing.T) {
-	gitDir, _, _ := seedBareRepo(t)
+	gitDir, _ := seedBareRepo(t)
 	ref, err := defaultBaseRef(gitDir)
 	if err != nil {
 		t.Fatalf("defaultBaseRef() error = %v", err)
@@ -1873,7 +1873,7 @@ func TestEnsureWorktreeRejectsUnmanaged(t *testing.T) {
 }
 
 func TestEnsureWorktreeCreatesNewBranch(t *testing.T) {
-	gitDir, _, container := seedBareRepo(t)
+	gitDir, container := seedBareRepo(t)
 	store := RepoStore{ContainerPath: container, GitDir: gitDir, MainPath: filepath.Join(container, "main"), Managed: true}
 
 	path, err := ensureWorktree(store, "feature/x")
@@ -1894,7 +1894,7 @@ func TestEnsureWorktreeCreatesNewBranch(t *testing.T) {
 }
 
 func TestEnsureWorktreeReusesExistingBranch(t *testing.T) {
-	gitDir, _, container := seedBareRepo(t)
+	gitDir, container := seedBareRepo(t)
 	runGit(t, "", "--git-dir", gitDir, "branch", "existing", "main")
 
 	store := RepoStore{ContainerPath: container, GitDir: gitDir, MainPath: filepath.Join(container, "main"), Managed: true}
@@ -1916,7 +1916,7 @@ func TestEnsureWorktreeReusesExistingBranch(t *testing.T) {
 }
 
 func TestEnsureWorktreeReturnsExistingPath(t *testing.T) {
-	gitDir, _, container := seedBareRepo(t)
+	gitDir, container := seedBareRepo(t)
 	store := RepoStore{ContainerPath: container, GitDir: gitDir, MainPath: filepath.Join(container, "main"), Managed: true}
 
 	first, err := ensureWorktree(store, "feature")
@@ -1933,7 +1933,7 @@ func TestEnsureWorktreeReturnsExistingPath(t *testing.T) {
 }
 
 func TestEnsureWorktreeRejectsInvalidBranch(t *testing.T) {
-	gitDir, _, container := seedBareRepo(t)
+	gitDir, container := seedBareRepo(t)
 	store := RepoStore{ContainerPath: container, GitDir: gitDir, MainPath: filepath.Join(container, "main"), Managed: true}
 
 	_, err := ensureWorktree(store, "feature.lock")
@@ -1968,7 +1968,7 @@ func TestEnsureWorktreeOrphanOnEmptyRepo(t *testing.T) {
 }
 
 func TestEnsureWorktreeRunCommandFailure(t *testing.T) {
-	gitDir, _, container := seedBareRepo(t)
+	gitDir, container := seedBareRepo(t)
 	store := RepoStore{ContainerPath: container, GitDir: gitDir, MainPath: filepath.Join(container, "main"), Managed: true}
 
 	defer stubExecCommandExcept(t, "gh", "mise")()
@@ -1984,7 +1984,7 @@ func TestEnsureWorktreeRunCommandFailure(t *testing.T) {
 }
 
 func TestEnsureWorktreeFinalizeFailure(t *testing.T) {
-	gitDir, _, container := seedBareRepo(t)
+	gitDir, container := seedBareRepo(t)
 	store := RepoStore{ContainerPath: container, GitDir: gitDir, MainPath: filepath.Join(container, "main"), Managed: true}
 
 	oldExec := execCommand
@@ -2060,7 +2060,7 @@ func TestEnsurePRWorktreeRejectsEmptyRepo(t *testing.T) {
 }
 
 func TestEnsurePRWorktreeCheckoutFlow(t *testing.T) {
-	gitDir, _, container := seedBareRepo(t)
+	gitDir, container := seedBareRepo(t)
 	store := RepoStore{ContainerPath: container, GitDir: gitDir, MainPath: filepath.Join(container, "main"), Managed: true}
 
 	defer stubExecCommandExcept(t, "git")()
@@ -2092,7 +2092,7 @@ func TestEnsurePRWorktreeCheckoutFlow(t *testing.T) {
 }
 
 func TestEnsurePRWorktreeReturnsExistingPath(t *testing.T) {
-	gitDir, _, container := seedBareRepo(t)
+	gitDir, container := seedBareRepo(t)
 	prPath := filepath.Join(container, "PR", "7")
 	if err := os.MkdirAll(prPath, 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
@@ -2524,7 +2524,7 @@ func TestLoadConfigExpandRootFails(t *testing.T) {
 }
 
 func TestPathCommandEnsureRequestError(t *testing.T) {
-	cfg, _ := setupTestConfig(t)
+	cfg := setupTestConfig(t)
 	localPath := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
 	if err := os.MkdirAll(localPath, 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
@@ -2619,7 +2619,7 @@ func TestManageCommandsFindRepoStoreError(t *testing.T) {
 }
 
 func TestStatusCommandReadRepoStatusError(t *testing.T) {
-	cfg, _ := setupTestConfig(t)
+	cfg := setupTestConfig(t)
 	containerPath := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
 	if err := os.MkdirAll(filepath.Join(containerPath, ".bare"), 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
@@ -2671,7 +2671,7 @@ func TestRunDispatchesInitConfig(t *testing.T) {
 }
 
 func TestRunDispatchesListAndLs(t *testing.T) {
-	cfg, _ := setupTestConfig(t)
+	cfg := setupTestConfig(t)
 	container := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
 	seedBareRepoAt(t, container)
 
@@ -2691,7 +2691,7 @@ func TestRunDispatchesListAndLs(t *testing.T) {
 }
 
 func TestRunDispatchesStatus(t *testing.T) {
-	cfg, _ := setupTestConfig(t)
+	cfg := setupTestConfig(t)
 	container := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
 	seedBareRepoAt(t, container)
 
@@ -2709,7 +2709,7 @@ func TestRunDispatchesStatus(t *testing.T) {
 func TestRunDispatchesPruneAndRm(t *testing.T) {
 	for _, name := range []string{"prune", "rm"} {
 		t.Run(name, func(t *testing.T) {
-			cfg, _ := setupTestConfig(t)
+			cfg := setupTestConfig(t)
 			container := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
 			seedBareRepoAt(t, container)
 
@@ -3192,7 +3192,7 @@ func TestShellInitResolvesSymlinks(t *testing.T) {
 }
 
 func TestPruneCommandGitFailure(t *testing.T) {
-	cfg, _ := setupTestConfig(t)
+	cfg := setupTestConfig(t)
 	container := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
 	if err := os.MkdirAll(filepath.Join(container, ".bare"), 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
@@ -3438,7 +3438,7 @@ func TestSetupMiseToolingInstallFailure(t *testing.T) {
 }
 
 func TestEnsurePRWorktreeWorktreeAddFailure(t *testing.T) {
-	_, _, container := seedBareRepo(t)
+	_, container := seedBareRepo(t)
 	gitDir := filepath.Join(container, ".bare")
 	store := RepoStore{ContainerPath: container, GitDir: gitDir, MainPath: filepath.Join(container, "main"), Managed: true}
 
@@ -3482,7 +3482,7 @@ func TestEnsurePRWorktreeWorktreeAddFailure(t *testing.T) {
 }
 
 func TestEnsurePRWorktreeCheckoutFailure(t *testing.T) {
-	_, _, container := seedBareRepo(t)
+	_, container := seedBareRepo(t)
 	gitDir := filepath.Join(container, ".bare")
 	store := RepoStore{ContainerPath: container, GitDir: gitDir, MainPath: filepath.Join(container, "main"), Managed: true}
 
@@ -3499,7 +3499,7 @@ func TestEnsurePRWorktreeCheckoutFailure(t *testing.T) {
 }
 
 func TestEnsurePRWorktreeFinalizeFailure(t *testing.T) {
-	_, _, container := seedBareRepo(t)
+	_, container := seedBareRepo(t)
 	gitDir := filepath.Join(container, ".bare")
 	store := RepoStore{ContainerPath: container, GitDir: gitDir, MainPath: filepath.Join(container, "main"), Managed: true}
 
@@ -3532,7 +3532,7 @@ func TestEnsurePRWorktreeFinalizeFailure(t *testing.T) {
 }
 
 func TestEnsureWorktreeRepoHasRefsFailure(t *testing.T) {
-	_, _, container := seedBareRepo(t)
+	_, container := seedBareRepo(t)
 	gitDir := filepath.Join(container, ".bare")
 	store := RepoStore{ContainerPath: container, GitDir: gitDir, MainPath: filepath.Join(container, "main"), Managed: true}
 
@@ -3793,7 +3793,7 @@ func TestEnsureOwnerPathReusesExistingDirectory(t *testing.T) {
 }
 
 func TestEnsureWorktreeRejectsEmptyName(t *testing.T) {
-	_, _, container := seedBareRepo(t)
+	_, container := seedBareRepo(t)
 	gitDir := filepath.Join(container, ".bare")
 	store := RepoStore{ContainerPath: container, GitDir: gitDir, MainPath: filepath.Join(container, "main"), Managed: true}
 
@@ -3807,7 +3807,7 @@ func TestEnsureWorktreeRejectsEmptyName(t *testing.T) {
 }
 
 func TestEnsureWorktreeLocalBranchExistsCheckFails(t *testing.T) {
-	_, _, container := seedBareRepo(t)
+	_, container := seedBareRepo(t)
 	gitDir := filepath.Join(container, ".bare")
 	store := RepoStore{ContainerPath: container, GitDir: gitDir, MainPath: filepath.Join(container, "main"), Managed: true}
 
@@ -3838,7 +3838,7 @@ func TestEnsureWorktreeLocalBranchExistsCheckFails(t *testing.T) {
 }
 
 func TestEnsureWorktreeDefaultBaseRefFailure(t *testing.T) {
-	_, _, container := seedBareRepo(t)
+	_, container := seedBareRepo(t)
 	gitDir := filepath.Join(container, ".bare")
 	store := RepoStore{ContainerPath: container, GitDir: gitDir, MainPath: filepath.Join(container, "main"), Managed: true}
 
@@ -3873,7 +3873,7 @@ func TestEnsureWorktreeDefaultBaseRefFailure(t *testing.T) {
 }
 
 func TestEnsurePRWorktreeRepoHasRefsFailure(t *testing.T) {
-	_, _, container := seedBareRepo(t)
+	_, container := seedBareRepo(t)
 	gitDir := filepath.Join(container, ".bare")
 	store := RepoStore{ContainerPath: container, GitDir: gitDir, MainPath: filepath.Join(container, "main"), Managed: true}
 
@@ -3900,7 +3900,7 @@ func TestEnsurePRWorktreeRepoHasRefsFailure(t *testing.T) {
 }
 
 func TestEnsurePRWorktreeDefaultBaseRefFailure(t *testing.T) {
-	_, _, container := seedBareRepo(t)
+	_, container := seedBareRepo(t)
 	gitDir := filepath.Join(container, ".bare")
 	store := RepoStore{ContainerPath: container, GitDir: gitDir, MainPath: filepath.Join(container, "main"), Managed: true}
 
@@ -4052,7 +4052,7 @@ func TestPruneCommandRejectsThreeArgs(t *testing.T) {
 }
 
 func TestStatusCommandMultipleEntriesPrintsSeparator(t *testing.T) {
-	cfg, _ := setupTestConfig(t)
+	cfg := setupTestConfig(t)
 
 	container := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
 	mainPath := filepath.Join(container, "main")
@@ -4092,7 +4092,7 @@ func TestStatusCommandMultipleEntriesPrintsSeparator(t *testing.T) {
 }
 
 func TestPruneCommandPrintsGitOutput(t *testing.T) {
-	cfg, _ := setupTestConfig(t)
+	cfg := setupTestConfig(t)
 
 	container := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
 	if err := os.MkdirAll(filepath.Join(container, ".bare"), 0o755); err != nil {
@@ -4117,7 +4117,7 @@ func TestPruneCommandPrintsGitOutput(t *testing.T) {
 }
 
 func TestEnsureRequestPRBranch(t *testing.T) {
-	cfg, _ := setupTestConfig(t)
+	cfg := setupTestConfig(t)
 	container := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
 	_, _ = seedBareRepoAt(t, container)
 
