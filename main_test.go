@@ -470,9 +470,6 @@ func TestShellInitPassesThroughManagementAliases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("shellInit(fish) error = %v", err)
 	}
-	if !strings.Contains(fishScript, "case \"\"") {
-		t.Fatalf("fish shell script missing empty-arg passthrough: %q", fishScript)
-	}
 	if !strings.Contains(fishScript, "list ls status prune rm") {
 		t.Fatalf("fish shell script missing ls/rm passthrough: %q", fishScript)
 	}
@@ -1092,29 +1089,15 @@ func TestRunPathDispatch(t *testing.T) {
 		}
 	})
 
-	t.Run("no args lists aliases", func(t *testing.T) {
-		configPath := filepath.Join(t.TempDir(), "config")
-		t.Setenv("GG_CONFIG", configPath)
-		t.Setenv("HOME", t.TempDir())
-		if err := os.WriteFile(configPath, []byte(`{"aliases":{"fc":"ForkbombEu/credimi","f":"ForkbombEu"}}`), 0o644); err != nil {
-			t.Fatalf("WriteFile() error = %v", err)
-		}
-
-		output, err := captureStdout(t, func() error {
+	t.Run("no args produces usage error", func(t *testing.T) {
+		_, err := captureStdout(t, func() error {
 			return run(nil)
 		})
-		if err != nil {
-			t.Fatalf("run(nil) error = %v", err)
+		if err == nil {
+			t.Fatal("run(nil) error = nil, want usage error")
 		}
-		lines := strings.Split(strings.TrimSpace(output), "\n")
-		if len(lines) != 2 {
-			t.Fatalf("len(lines) = %d, want 2 (%v)", len(lines), lines)
-		}
-		if !strings.HasPrefix(lines[0], "f") || !strings.HasSuffix(lines[0], "-> ForkbombEu") {
-			t.Fatalf("line[0] = %q, want owner alias entry", lines[0])
-		}
-		if !strings.HasPrefix(lines[1], "fc") || !strings.HasSuffix(lines[1], "-> ForkbombEu/credimi") {
-			t.Fatalf("line[1] = %q, want repo alias entry", lines[1])
+		if !strings.Contains(err.Error(), "usage:") {
+			t.Fatalf("run(nil) error = %q, want substring %q", err.Error(), "usage:")
 		}
 	})
 }

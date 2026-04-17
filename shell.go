@@ -37,9 +37,6 @@ const fishInitTemplate = `function gg --description 'manage git repos'
     set -l gg_bin %s
 
     switch "$argv[1]"
-    case ""
-        $gg_bin $argv
-        return $status
     case help -h --help version --version shell-init config-path init-config path alias list ls status prune rm
         $gg_bin $argv
         return $status
