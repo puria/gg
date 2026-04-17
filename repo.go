@@ -127,6 +127,14 @@ func ensureRepoStore(cfg Config, repo Repo) (RepoStore, error) {
 		if err := runCommand("", "git", "clone", "--bare", "--recursive", repo.CloneURL(cfg), store.GitDir); err != nil {
 			return RepoStore{}, fmt.Errorf("clone %s: %w", repo.String(), err)
 		}
+		// bare clones don't set up the remote tracking refspec, so tools like
+		// `gh pr create` can't resolve origin/main. Fix it once at clone time.
+		if err := runCommand("", "git", "--git-dir", store.GitDir, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
+			return RepoStore{}, fmt.Errorf("configure remote tracking for %s: %w", repo.String(), err)
+		}
+		if err := runCommand("", "git", "--git-dir", store.GitDir, "fetch", "origin"); err != nil {
+			return RepoStore{}, fmt.Errorf("fetch remote tracking refs for %s: %w", repo.String(), err)
+		}
 	}
 
 	mainExists, err := directoryExists(store.MainPath)
