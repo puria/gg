@@ -14,6 +14,14 @@ Repos are stored as a container directory with a bare Git repo plus worktrees:
 
 ## Install
 
+### With mise
+
+```bash
+mise use -g github:puria/gg@latest
+```
+
+### With Go
+
 ```bash
 go install github.com/puria/gg@latest
 ```
