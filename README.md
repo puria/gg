@@ -163,7 +163,7 @@ Or inline:
 ```fish
 function gg --description 'manage git repos'
     switch "$argv[1]"
-    case help -h --help version --version shell-init config-path init-config path alias
+    case help -h --help version --version shell-init config-path init-config path alias list ls status prune rm
         command gg $argv
         return $status
     end
