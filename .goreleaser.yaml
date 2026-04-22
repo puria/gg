@@ -23,7 +23,7 @@ builds:
 
 archives:
   - id: binaries
-    ids: [gg]
+    builds: [gg]
     name_template: >-
       gg-{{- if eq .Os "linux" -}}Linux
          {{- else if eq .Os "darwin" -}}Darwin
@@ -34,7 +34,7 @@ archives:
       {{- else -}}{{ .Arch }}{{- end -}}
     format_overrides:
       - goos: windows
-        formats: [zip]
+        format: zip
 
 checksum:
   name_template: "{{ .ProjectName }}_v{{ .Version }}_checksums.txt"
