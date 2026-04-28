@@ -12,6 +12,8 @@ import (
 
 var execCommand = exec.Command //nolint:gochecknoglobals
 
+var execLookPath = exec.LookPath //nolint:gochecknoglobals
+
 var osStat = os.Stat //nolint:gochecknoglobals
 
 var osMkdirAll = os.MkdirAll //nolint:gochecknoglobals
@@ -26,6 +28,7 @@ type RepoStore struct {
 	GitDir        string
 	MainPath      string
 	Managed       bool
+	Repo          Repo
 }
 
 type Request struct {
@@ -97,6 +100,7 @@ func ensureRepoStore(cfg Config, repo Repo) (RepoStore, error) {
 		GitDir:        repo.BarePath(cfg),
 		MainPath:      repo.MainPath(cfg),
 		Managed:       true,
+		Repo:          repo,
 	}
 
 	containerExists, err := directoryExists(store.ContainerPath)
@@ -179,7 +183,7 @@ func ensureRepoStore(cfg Config, repo Repo) (RepoStore, error) {
 			}
 		}
 
-		if err := finalizeWorktreeSetup(store.MainPath); err != nil {
+		if err := finalizeWorktreeSetup(store.MainPath, repo); err != nil {
 			return RepoStore{}, err
 		}
 	}
@@ -455,7 +459,7 @@ func ensureWorktree(store RepoStore, worktreeName string) (string, error) {
 		return "", fmt.Errorf("create worktree %q: %w", worktreeName, err)
 	}
 
-	if err := finalizeWorktreeSetup(path); err != nil {
+	if err := finalizeWorktreeSetup(path, store.Repo); err != nil {
 		return "", err
 	}
 
@@ -507,7 +511,7 @@ func ensurePRWorktree(store RepoStore, prNumber int) (string, error) {
 		return "", fmt.Errorf("checkout PR %d: %w", prNumber, err)
 	}
 
-	if err := finalizeWorktreeSetup(path); err != nil {
+	if err := finalizeWorktreeSetup(path, store.Repo); err != nil {
 		return "", err
 	}
 
@@ -781,8 +785,31 @@ func updateSubmodules(worktreePath string) error {
 	return nil
 }
 
-func finalizeWorktreeSetup(worktreePath string) error {
+func configureGitHubDefaultRepo(worktreePath string, repo Repo) error {
+	if repo == (Repo{}) {
+		return nil
+	}
+
+	if _, err := execLookPath("gh"); err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return nil
+		}
+		return fmt.Errorf("find gh CLI: %w", err)
+	}
+
+	if err := runCommand(worktreePath, "gh", "repo", "set-default", repo.String()); err != nil {
+		return fmt.Errorf("set gh default repo for %s in %s: %w", repo.String(), worktreePath, err)
+	}
+
+	return nil
+}
+
+func finalizeWorktreeSetup(worktreePath string, repo Repo) error {
 	if err := updateSubmodules(worktreePath); err != nil {
+		return err
+	}
+
+	if err := configureGitHubDefaultRepo(worktreePath, repo); err != nil {
 		return err
 	}
 

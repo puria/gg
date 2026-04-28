@@ -203,6 +203,7 @@ func findRepoStore(cfg Config, repo Repo) (RepoStore, error) {
 		GitDir:        repo.BarePath(cfg),
 		MainPath:      repo.MainPath(cfg),
 		Managed:       true,
+		Repo:          repo,
 	}
 
 	containerExists, err := directoryExists(store.ContainerPath)
