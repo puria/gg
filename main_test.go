@@ -15,6 +15,17 @@ import (
 	"testing"
 )
 
+func TestMain(m *testing.M) {
+	oldExecLookPath := execLookPath
+	execLookPath = func(string) (string, error) {
+		return "", exec.ErrNotFound
+	}
+
+	code := m.Run()
+	execLookPath = oldExecLookPath
+	os.Exit(code)
+}
+
 func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("GG_CONFIG", filepath.Join(t.TempDir(), "config"))
 	t.Setenv("HOME", "/tmp/gg-home")
@@ -598,7 +609,7 @@ func TestFinalizeWorktreeSetupRunsMiseWhenConfigPresent(t *testing.T) {
 	restore := stubExecCommand(t)
 	defer restore()
 
-	if err := finalizeWorktreeSetup(worktreePath); err != nil {
+	if err := finalizeWorktreeSetup(worktreePath, Repo{}); err != nil {
 		t.Fatalf("finalizeWorktreeSetup() error = %v", err)
 	}
 
@@ -624,7 +635,7 @@ func TestFinalizeWorktreeSetupSkipsMiseWithoutConfig(t *testing.T) {
 	restore := stubExecCommand(t)
 	defer restore()
 
-	if err := finalizeWorktreeSetup(worktreePath); err != nil {
+	if err := finalizeWorktreeSetup(worktreePath, Repo{}); err != nil {
 		t.Fatalf("finalizeWorktreeSetup() error = %v", err)
 	}
 
@@ -639,6 +650,74 @@ func TestFinalizeWorktreeSetupSkipsMiseWithoutConfig(t *testing.T) {
 		if commands[i] != want[i] {
 			t.Fatalf("command %d = %q, want %q", i, commands[i], want[i])
 		}
+	}
+}
+
+func TestFinalizeWorktreeSetupSetsGitHubDefaultRepoWhenGHPresent(t *testing.T) {
+	worktreePath := t.TempDir()
+	repo := Repo{Owner: "owner", Name: "repo"}
+
+	restoreExec := stubExecCommand(t)
+	defer restoreExec()
+	restoreLookPath := stubExecLookPath(t, func(name string) (string, error) {
+		if name == "gh" {
+			return "/usr/bin/gh", nil
+		}
+		return "", exec.ErrNotFound
+	})
+	defer restoreLookPath()
+
+	if err := finalizeWorktreeSetup(worktreePath, repo); err != nil {
+		t.Fatalf("finalizeWorktreeSetup() error = %v", err)
+	}
+
+	commands := readCommandLog(t)
+	want := []string{
+		"git\tsubmodule\tupdate\t--init\t--recursive",
+		"gh\trepo\tset-default\towner/repo",
+	}
+	if len(commands) != len(want) {
+		t.Fatalf("len(commands) = %d, want %d (%v)", len(commands), len(want), commands)
+	}
+	for i := range want {
+		if commands[i] != want[i] {
+			t.Fatalf("command %d = %q, want %q", i, commands[i], want[i])
+		}
+	}
+}
+
+func TestFinalizeWorktreeSetupGitHubDefaultRepoFailure(t *testing.T) {
+	worktreePath := t.TempDir()
+	repo := Repo{Owner: "owner", Name: "repo"}
+
+	restoreLookPath := stubExecLookPath(t, func(name string) (string, error) {
+		if name == "gh" {
+			return "/usr/bin/gh", nil
+		}
+		return "", exec.ErrNotFound
+	})
+	defer restoreLookPath()
+
+	oldExec := execCommand
+	defer func() { execCommand = oldExec }()
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		cmdArgs := []string{"-test.run=TestHelperProcess", "--", name}
+		cmdArgs = append(cmdArgs, args...)
+		cmd := exec.Command(os.Args[0], cmdArgs...)
+		env := append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+		if name == "gh" {
+			env = append(env, "GG_TEST_COMMAND_EXIT=1")
+		}
+		cmd.Env = env
+		return cmd
+	}
+
+	err := finalizeWorktreeSetup(worktreePath, repo)
+	if err == nil {
+		t.Fatal("finalizeWorktreeSetup() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "set gh default repo for owner/repo") {
+		t.Fatalf("error = %q, want substring %q", err.Error(), "set gh default repo for owner/repo")
 	}
 }
 
@@ -3140,7 +3219,7 @@ func TestFinalizeWorktreeSetupSubmoduleFailure(t *testing.T) {
 	defer stubExecCommand(t)()
 	t.Setenv("GG_TEST_COMMAND_EXIT", "1")
 
-	err := finalizeWorktreeSetup(t.TempDir())
+	err := finalizeWorktreeSetup(t.TempDir(), Repo{})
 	if err == nil {
 		t.Fatal("finalizeWorktreeSetup() error = nil, want error")
 	}
@@ -3441,6 +3520,16 @@ func stubExecCommand(t *testing.T) func() {
 
 	return func() {
 		execCommand = oldExecCommand
+	}
+}
+
+func stubExecLookPath(t *testing.T, fn func(string) (string, error)) func() {
+	t.Helper()
+
+	oldExecLookPath := execLookPath
+	execLookPath = fn
+	return func() {
+		execLookPath = oldExecLookPath
 	}
 }
 
@@ -4395,7 +4484,7 @@ func TestFinalizeWorktreeSetupMisePropagates(t *testing.T) {
 		return cmd
 	}
 
-	err := finalizeWorktreeSetup(worktree)
+	err := finalizeWorktreeSetup(worktree, Repo{})
 	if err == nil {
 		t.Fatal("finalizeWorktreeSetup() error = nil, want error")
 	}
