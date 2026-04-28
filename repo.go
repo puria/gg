@@ -144,7 +144,7 @@ func ensureRepoStore(cfg Config, repo Repo) (RepoStore, error) {
 		return RepoStore{}, err
 	}
 	hasRefs := false
-	if !(mainExists && !gitDirInitialized(store.GitDir)) {
+	if !mainExists || gitDirInitialized(store.GitDir) {
 		hasRefs, err = ensureRemoteTrackingRefs(store.GitDir, repo, freshClone)
 		if err != nil {
 			return RepoStore{}, err
