@@ -2133,9 +2133,8 @@ func TestEnsureRepoStoreFullCloneFlow(t *testing.T) {
 	mainPath := repo.MainPath(cfg)
 	want := []string{
 		"git\tclone\t--bare\t--recursive\thttps://github.com/owner/repo.git\t" + gitDir,
-		"git\t--git-dir\t" + gitDir + "\tconfig\tremote.origin.fetch\t+refs/heads/*:refs/remotes/origin/*",
-		"git\t--git-dir\t" + gitDir + "\tfetch\torigin",
 		"git\t--git-dir\t" + gitDir + "\tfor-each-ref\t--count=1\t--format=%(refname)",
+		"git\t--git-dir\t" + gitDir + "\tconfig\tremote.origin.fetch\t+refs/heads/*:refs/remotes/origin/*",
 		"git\t--git-dir\t" + gitDir + "\tworktree\tadd\t--orphan\t-b\tmain\t" + mainPath,
 		"git\tsubmodule\tupdate\t--init\t--recursive",
 	}
@@ -2147,6 +2146,80 @@ func TestEnsureRepoStoreFullCloneFlow(t *testing.T) {
 	for i := range want {
 		if commands[i] != want[i] {
 			t.Fatalf("commands[%d] = %q, want %q", i, commands[i], want[i])
+		}
+	}
+}
+
+func TestEnsureRepoStoreRepairsRemoteTrackingForExistingManagedRepo(t *testing.T) {
+	cfg := Config{Root: t.TempDir(), Host: "github.com"}
+	repo := Repo{Owner: "owner", Name: "repo"}
+
+	container := repo.ContainerPath(cfg)
+	gitDir := repo.BarePath(cfg)
+	mainPath := repo.MainPath(cfg)
+	for _, path := range []string{container, gitDir, mainPath} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatalf("MkdirAll() error = %v", err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	t.Setenv("GG_TEST_COMMAND_LOG", logPath)
+
+	oldExec := execCommand
+	defer func() { execCommand = oldExec }()
+
+	fetched := false
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		cmdArgs := []string{"-test.run=TestHelperProcess", "--", name}
+		cmdArgs = append(cmdArgs, args...)
+		cmd := exec.Command(os.Args[0], cmdArgs...)
+		env := append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+
+		switch {
+		case slices.Contains(args, "fetch"):
+			fetched = true
+		case slices.Contains(args, "for-each-ref"):
+			env = append(env, "GG_TEST_COMMAND_STDOUT=refs/heads/main")
+		case slices.Contains(args, "symbolic-ref"):
+			if fetched {
+				env = append(env, "GG_TEST_COMMAND_STDOUT=origin/main")
+			} else {
+				env = append(env, "GG_TEST_COMMAND_EXIT=1")
+			}
+		case slices.Contains(args, "rev-parse"):
+			for _, arg := range args {
+				if arg == "origin/main" || arg == "origin/master" {
+					env = append(env, "GG_TEST_COMMAND_EXIT=1")
+					break
+				}
+			}
+		}
+
+		cmd.Env = env
+		return cmd
+	}
+
+	store, err := ensureRepoStore(cfg, repo)
+	if err != nil {
+		t.Fatalf("ensureRepoStore() error = %v", err)
+	}
+	if store.MainPath != mainPath {
+		t.Fatalf("store.MainPath = %q, want %q", store.MainPath, mainPath)
+	}
+
+	commands := readCommandLog(t)
+	wantLines := []string{
+		"git\t--git-dir\t" + gitDir + "\tconfig\tremote.origin.fetch\t+refs/heads/*:refs/remotes/origin/*",
+		"git\t--git-dir\t" + gitDir + "\tfetch\torigin",
+		"git\tbranch\t--set-upstream-to=origin/main\tmain",
+	}
+	for _, want := range wantLines {
+		if !slices.Contains(commands, want) {
+			t.Fatalf("commands missing %q\n%v", want, commands)
 		}
 	}
 }
@@ -2188,9 +2261,36 @@ func TestEnsureRepoStoreFetchFailure(t *testing.T) {
 	cfg := Config{Root: t.TempDir(), Host: "github.com"}
 	repo := Repo{Owner: "owner", Name: "repo"}
 
-	defer stubExecCommand(t)()
-	t.Setenv("GG_TEST_SIMULATE_MKDIR", "1")
-	t.Setenv("GG_TEST_FAIL_ON_EXACT_ARG", "fetch")
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	t.Setenv("GG_TEST_COMMAND_LOG", logPath)
+
+	oldExec := execCommand
+	defer func() { execCommand = oldExec }()
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		cmdArgs := []string{"-test.run=TestHelperProcess", "--", name}
+		cmdArgs = append(cmdArgs, args...)
+		cmd := exec.Command(os.Args[0], cmdArgs...)
+		env := append(os.Environ(), "GO_WANT_HELPER_PROCESS=1", "GG_TEST_SIMULATE_MKDIR=1")
+
+		switch {
+		case slices.Contains(args, "for-each-ref"):
+			env = append(env, "GG_TEST_COMMAND_STDOUT=refs/heads/main")
+		case slices.Contains(args, "symbolic-ref"):
+			env = append(env, "GG_TEST_COMMAND_EXIT=1")
+		case slices.Contains(args, "rev-parse"):
+			for _, arg := range args {
+				if arg == "origin/main" || arg == "origin/master" {
+					env = append(env, "GG_TEST_COMMAND_EXIT=1")
+					break
+				}
+			}
+		case slices.Contains(args, "fetch"):
+			env = append(env, "GG_TEST_COMMAND_EXIT=1")
+		}
+
+		cmd.Env = env
+		return cmd
+	}
 
 	_, err := ensureRepoStore(cfg, repo)
 	if err == nil {
@@ -2466,6 +2566,26 @@ func TestAliasCommandLoadErrors(t *testing.T) {
 		}
 	})
 
+}
+
+func TestAliasCommandWriteConfigError(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config")
+	t.Setenv("GG_CONFIG", configPath)
+	t.Setenv("HOME", t.TempDir())
+
+	oldWriteFile := osWriteFile
+	defer func() { osWriteFile = oldWriteFile }()
+	osWriteFile = func(string, []byte, os.FileMode) error {
+		return errors.New("simulated write failure")
+	}
+
+	err := aliasCommand([]string{"ForkbombEu/credimi", "fc"})
+	if err == nil {
+		t.Fatal("aliasCommand() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "write config") {
+		t.Fatalf("error = %q, want substring %q", err.Error(), "write config")
+	}
 }
 
 func TestLoadConfigEmptyFileReturnsDefaults(t *testing.T) {
@@ -2832,6 +2952,17 @@ func TestTryResolveStandaloneRepoSlashMalformed(t *testing.T) {
 	}
 }
 
+func TestTryResolveStandaloneRepoNoSlashMiss(t *testing.T) {
+	cfg := Config{Host: "github.com"}
+	_, ok, err := tryResolveStandaloneRepo(cfg, "owner")
+	if err != nil {
+		t.Fatalf("tryResolveStandaloneRepo() error = %v", err)
+	}
+	if ok {
+		t.Fatal("tryResolveStandaloneRepo() ok = true, want false")
+	}
+}
+
 func TestDirectoryExistsRejectsFile(t *testing.T) {
 	filePath := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(filePath, []byte{}, 0o644); err != nil {
@@ -3036,6 +3167,27 @@ func TestSetupMiseToolingTrustFailure(t *testing.T) {
 	}
 }
 
+func TestSetupMiseToolingFindConfigError(t *testing.T) {
+	worktree := t.TempDir()
+
+	oldStat := osStat
+	defer func() { osStat = oldStat }()
+	osStat = func(path string) (os.FileInfo, error) {
+		if path == filepath.Join(worktree, "mise.toml") {
+			return nil, errors.New("simulated stat failure")
+		}
+		return os.Stat(path)
+	}
+
+	err := setupMiseTooling(worktree)
+	if err == nil {
+		t.Fatal("setupMiseTooling() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "stat") {
+		t.Fatalf("error = %q, want stat error", err.Error())
+	}
+}
+
 func TestSetupMiseToolingHandlesBothConfigs(t *testing.T) {
 	worktree := t.TempDir()
 	for _, name := range []string{"mise.toml", ".mise.toml"} {
@@ -3098,6 +3250,26 @@ func TestClassifyExistingRepoPathLocal(t *testing.T) {
 	}
 	if got != "local" {
 		t.Fatalf("classifyExistingRepoPath() = %q, want %q", got, "local")
+	}
+}
+
+func TestClassifyExistingRepoPathManaged(t *testing.T) {
+	container := t.TempDir()
+	store := RepoStore{
+		ContainerPath: container,
+		GitDir:        filepath.Join(container, ".bare"),
+		MainPath:      filepath.Join(container, "main"),
+	}
+	if err := os.MkdirAll(store.GitDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	got, err := classifyExistingRepoPath(store)
+	if err != nil {
+		t.Fatalf("classifyExistingRepoPath() error = %v", err)
+	}
+	if got != "managed" {
+		t.Fatalf("classifyExistingRepoPath() = %q, want %q", got, "managed")
 	}
 }
 
@@ -4670,5 +4842,47 @@ func TestDiscoverEntriesWalkDirError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "scan ") {
 		t.Fatalf("error = %q, want substring %q", err.Error(), "scan ")
+	}
+}
+
+func TestDiscoverEntriesDirectoryExistsError(t *testing.T) {
+	root := t.TempDir()
+
+	oldStat := osStat
+	defer func() { osStat = oldStat }()
+	osStat = func(path string) (os.FileInfo, error) {
+		if path == root {
+			return nil, errors.New("simulated stat failure")
+		}
+		return os.Stat(path)
+	}
+
+	_, err := discoverEntries(root, "worktree")
+	if err == nil {
+		t.Fatal("discoverEntries() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "stat "+root) {
+		t.Fatalf("error = %q, want substring %q", err.Error(), "stat "+root)
+	}
+}
+
+func TestRemoveEmptyChildrenDirectoryExistsError(t *testing.T) {
+	root := t.TempDir()
+
+	oldStat := osStat
+	defer func() { osStat = oldStat }()
+	osStat = func(path string) (os.FileInfo, error) {
+		if path == root {
+			return nil, errors.New("simulated stat failure")
+		}
+		return os.Stat(path)
+	}
+
+	_, err := removeEmptyChildren(root)
+	if err == nil {
+		t.Fatal("removeEmptyChildren() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "stat "+root) {
+		t.Fatalf("error = %q, want substring %q", err.Error(), "stat "+root)
 	}
 }
