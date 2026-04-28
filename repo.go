@@ -126,6 +126,7 @@ func ensureRepoStore(cfg Config, repo Repo) (RepoStore, error) {
 		// untestable: passthrough — directoryExists error is wrapped at its source.
 		return RepoStore{}, err
 	}
+	freshClone := false
 	if !bareExists {
 		if err := osMkdirAll(store.ContainerPath, 0o755); err != nil {
 			return RepoStore{}, fmt.Errorf("create repository container: %w", err)
@@ -134,14 +135,7 @@ func ensureRepoStore(cfg Config, repo Repo) (RepoStore, error) {
 		if err := runCommand("", "git", "clone", "--bare", "--recursive", repo.CloneURL(cfg), store.GitDir); err != nil {
 			return RepoStore{}, fmt.Errorf("clone %s: %w", repo.String(), err)
 		}
-		// bare clones don't set up the remote tracking refspec, so tools like
-		// `gh pr create` can't resolve origin/main. Fix it once at clone time.
-		if err := runCommand("", "git", "--git-dir", store.GitDir, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
-			return RepoStore{}, fmt.Errorf("configure remote tracking for %s: %w", repo.String(), err)
-		}
-		if err := runCommand("", "git", "--git-dir", store.GitDir, "fetch", "origin"); err != nil {
-			return RepoStore{}, fmt.Errorf("fetch remote tracking refs for %s: %w", repo.String(), err)
-		}
+		freshClone = true
 	}
 
 	mainExists, err := directoryExists(store.MainPath)
@@ -149,12 +143,14 @@ func ensureRepoStore(cfg Config, repo Repo) (RepoStore, error) {
 		// untestable: passthrough — directoryExists error is wrapped at its source.
 		return RepoStore{}, err
 	}
-	if !mainExists {
-		hasRefs, err := repoHasRefs(store.GitDir)
+	hasRefs := false
+	if !(mainExists && !gitDirInitialized(store.GitDir)) {
+		hasRefs, err = ensureRemoteTrackingRefs(store.GitDir, repo, freshClone)
 		if err != nil {
 			return RepoStore{}, err
 		}
-
+	}
+	if !mainExists {
 		if !hasRefs {
 			args := []string{"--git-dir", store.GitDir, "worktree", "add", "--orphan", "-b", "main", store.MainPath}
 			if err := runCommand("", "git", args...); err != nil {
@@ -186,6 +182,10 @@ func ensureRepoStore(cfg Config, repo Repo) (RepoStore, error) {
 		if err := finalizeWorktreeSetup(store.MainPath); err != nil {
 			return RepoStore{}, err
 		}
+	}
+
+	if err := ensureDefaultBranchUpstream(store, hasRefs); err != nil {
+		return RepoStore{}, err
 	}
 
 	return store, nil
@@ -674,6 +674,45 @@ func defaultBaseRef(gitDir string) (string, error) {
 	return ref, err
 }
 
+func ensureRemoteTrackingRefs(gitDir string, repo Repo, assumeOriginRemote bool) (bool, error) {
+	hasRefs, err := repoHasRefs(gitDir)
+	if err != nil {
+		return false, err
+	}
+
+	hasOriginRemote := assumeOriginRemote
+	if !hasOriginRemote {
+		hasOriginRemote, err = repoHasOriginRemote(gitDir)
+		if err != nil {
+			return false, err
+		}
+	}
+	if !hasOriginRemote {
+		return hasRefs, nil
+	}
+
+	// Bare clones keep remote heads as local branches, so configure a normal
+	// remote-tracking refspec and backfill refs when they're still missing.
+	if err := runCommand("", "git", "--git-dir", gitDir, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
+		return false, fmt.Errorf("configure remote tracking for %s: %w", repo.String(), err)
+	}
+
+	if !hasRefs {
+		return false, nil
+	}
+
+	_, ref, err := defaultBranchRef(gitDir)
+	if err == nil && strings.HasPrefix(ref, "origin/") {
+		return true, nil
+	}
+
+	if err := runCommand("", "git", "--git-dir", gitDir, "fetch", "origin"); err != nil {
+		return false, fmt.Errorf("fetch remote tracking refs for %s: %w", repo.String(), err)
+	}
+
+	return true, nil
+}
+
 func repoHasRefs(gitDir string) (bool, error) {
 	output, err := captureCommand("", "git", "--git-dir", gitDir, "for-each-ref", "--count=1", "--format=%(refname)")
 	if err != nil {
@@ -681,6 +720,57 @@ func repoHasRefs(gitDir string) (bool, error) {
 	}
 
 	return strings.TrimSpace(output) != "", nil
+}
+
+func ensureDefaultBranchUpstream(store RepoStore, hasRefs bool) error {
+	if !hasRefs {
+		return nil
+	}
+
+	defaultBranch, baseRef, err := defaultBranchRef(store.GitDir)
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(baseRef, "origin/") {
+		return nil
+	}
+
+	exists, err := localBranchExists(store.GitDir, defaultBranch)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+
+	if err := runCommand(store.MainPath, "git", "branch", "--set-upstream-to="+baseRef, defaultBranch); err != nil {
+		return fmt.Errorf("set upstream for %s in %s: %w", defaultBranch, store.MainPath, err)
+	}
+
+	return nil
+}
+
+func repoHasOriginRemote(gitDir string) (bool, error) {
+	_, err := captureCommand("", "git", "--git-dir", gitDir, "config", "--get", "remote.origin.url")
+	if err == nil {
+		return true, nil
+	}
+
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+
+	return false, fmt.Errorf("check origin remote for %s: %w", gitDir, err)
+}
+
+func gitDirInitialized(gitDir string) bool {
+	exists, err := pathExists(filepath.Join(gitDir, "HEAD"))
+	if err != nil {
+		return false
+	}
+
+	return exists
 }
 
 func updateSubmodules(worktreePath string) error {
