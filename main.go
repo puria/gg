@@ -42,6 +42,8 @@ func run(args []string) error {
 		return nil
 	case args[0] == "alias":
 		return aliasCommand(args[1:])
+	case args[0] == "new":
+		return newCommand(args[1:])
 	case args[0] == "list" || args[0] == "ls":
 		return listCommand(args[1:])
 	case args[0] == "status":
@@ -103,6 +105,7 @@ Usage:
   gg path <owner/repo>
   gg path <owner> <repo>
   gg alias <target> <name>
+  gg new <owner/repo>
   gg list <owner/repo>
   gg list <owner> <repo>
   gg ls <owner/repo>
@@ -124,6 +127,7 @@ Behavior:
   - reads config from $XDG_CONFIG_HOME/gg/config or ~/.config/gg/config
   - expands aliases from config
   - can persist aliases with 'gg alias <target> <name>'
+  - can create a new local repository with markdown templates from puria/md
   - clones missing repositories into a bare repo container
   - can open an owner directory at <root>/<host>/<owner>
   - uses <repo>/main as the default checkout path
