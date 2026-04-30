@@ -37,8 +37,14 @@ const fishInitTemplate = `function gg --description 'manage git repos'
     set -l gg_bin %s
 
     switch "$argv[1]"
-    case help -h --help version --version shell-init config-path init-config path alias new list ls status prune rm
+    case help -h --help version --version shell-init config-path init-config path alias list ls status prune rm
         $gg_bin $argv
+        return $status
+    case new
+        set -l dir ($gg_bin $argv)
+        or return $status
+
+        cd $dir
         return $status
     end
 
@@ -53,8 +59,14 @@ const posixInitTemplate = `gg() {
   local gg_bin=%s
 
   case "$1" in
-    ""|help|-h|--help|version|--version|shell-init|config-path|init-config|path|alias|new|list|ls|status|prune|rm)
+    ""|help|-h|--help|version|--version|shell-init|config-path|init-config|path|alias|list|ls|status|prune|rm)
       "$gg_bin" "$@"
+      return $?
+      ;;
+    new)
+      local new_dir
+      new_dir="$("$gg_bin" "$@")" || return $?
+      cd "$new_dir" || return $?
       return $?
       ;;
   esac

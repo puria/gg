@@ -485,7 +485,7 @@ func TestShellInitEmbedsExecutablePath(t *testing.T) {
 	}
 }
 
-func TestShellInitPassesThroughManagementAliases(t *testing.T) {
+func TestShellInitHandlesReservedCommands(t *testing.T) {
 	oldExecutablePath := executablePath
 	executablePath = func() (string, error) {
 		return "/tmp/bin/gg", nil
@@ -498,16 +498,28 @@ func TestShellInitPassesThroughManagementAliases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("shellInit(fish) error = %v", err)
 	}
-	if !strings.Contains(fishScript, "new list ls status prune rm") {
-		t.Fatalf("fish shell script missing new/ls/rm passthrough: %q", fishScript)
+	if !strings.Contains(fishScript, "alias list ls status prune rm") {
+		t.Fatalf("fish shell script missing management passthrough: %q", fishScript)
+	}
+	if strings.Contains(fishScript, "alias new list") {
+		t.Fatalf("fish shell script still passes new through without cd: %q", fishScript)
+	}
+	if !strings.Contains(fishScript, "case new") || !strings.Contains(fishScript, "set -l dir ($gg_bin $argv)") {
+		t.Fatalf("fish shell script missing new cd handling: %q", fishScript)
 	}
 
 	bashScript, err := shellInit("bash")
 	if err != nil {
 		t.Fatalf("shellInit(bash) error = %v", err)
 	}
-	if !strings.Contains(bashScript, "|new|list|ls|status|prune|rm)") {
-		t.Fatalf("bash shell script missing new/ls/rm passthrough: %q", bashScript)
+	if !strings.Contains(bashScript, "|alias|list|ls|status|prune|rm)") {
+		t.Fatalf("bash shell script missing management passthrough: %q", bashScript)
+	}
+	if strings.Contains(bashScript, "|alias|new|list|") {
+		t.Fatalf("bash shell script still passes new through without cd: %q", bashScript)
+	}
+	if !strings.Contains(bashScript, "new)") || !strings.Contains(bashScript, `new_dir="$("$gg_bin" "$@")"`) {
+		t.Fatalf("bash shell script missing new cd handling: %q", bashScript)
 	}
 }
 
