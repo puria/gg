@@ -146,7 +146,7 @@ Behavior:
 
 - `gg list credimi` prints `main`, `worktrees/*`, and `PR/*` entries for the managed repo
 - `gg status credimi` runs `git status --short --branch` for each known worktree
-- `gg prune credimi` runs `git worktree prune --verbose` and removes empty directories left under `worktrees/` or `PR/`
+- `gg prune credimi` removes clean `worktrees/*` and `PR/*` checkouts that are already merged into the default branch, then cleans stale Git worktree metadata and leftover empty directories
 
 ## Shell Integration
 
