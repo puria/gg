@@ -44,6 +44,23 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 }
 
+func TestMainSuccess(t *testing.T) {
+	oldArgs := os.Args
+	defer func() { os.Args = oldArgs }()
+	os.Args = []string{"gg", "version"}
+
+	output, err := captureStdout(t, func() error {
+		main()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("captureStdout() error = %v", err)
+	}
+	if strings.TrimSpace(output) != version {
+		t.Fatalf("main() output = %q, want %q", strings.TrimSpace(output), version)
+	}
+}
+
 func TestLoadConfigFromXDGPath(t *testing.T) {
 	xdgHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdgHome)
@@ -1702,6 +1719,36 @@ func TestPruneCommandKeepsUnmergedWorktree(t *testing.T) {
 	}
 }
 
+func TestPruneCommandSkipsDirtyWorktree(t *testing.T) {
+	cfg := setupTestConfig(t)
+
+	container := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
+	gitDir, _ := seedBareRepoAt(t, container)
+	worktreePath := filepath.Join(container, "worktrees", "dirty")
+
+	runGit(t, "", "--git-dir", gitDir, "worktree", "add", "-b", "dirty", worktreePath, "main")
+	if err := os.WriteFile(filepath.Join(worktreePath, "scratch.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	output, err := captureStdout(t, func() error {
+		return pruneCommand([]string{"owner/repo"})
+	})
+	if err != nil {
+		t.Fatalf("pruneCommand() error = %v", err)
+	}
+
+	if !strings.Contains(output, "skipped dirty worktree dirty "+worktreePath) {
+		t.Fatalf("output missing dirty skip in:\n%s", output)
+	}
+	if strings.Contains(output, "removed merged worktree") {
+		t.Fatalf("output should not report removing dirty worktree:\n%s", output)
+	}
+	if _, err := os.Stat(worktreePath); err != nil {
+		t.Fatalf("dirty worktree missing: %v", err)
+	}
+}
+
 func TestPruneCommandRejectsLocalRepo(t *testing.T) {
 	cfg := setupTestConfig(t)
 
@@ -2173,6 +2220,30 @@ func stubExecCommandExcept(t *testing.T, passthrough ...string) func() {
 		cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
 		return cmd
 	}
+	return func() {
+		execCommand = oldExec
+	}
+}
+
+func stubDefaultBranchGit(t *testing.T, envForArgs func([]string) []string) func() {
+	t.Helper()
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	t.Setenv("GG_TEST_COMMAND_LOG", logPath)
+
+	oldExec := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		cmdArgs := []string{"-test.run=TestHelperProcess", "--", name}
+		cmdArgs = append(cmdArgs, args...)
+		cmd := exec.Command(os.Args[0], cmdArgs...)
+		env := append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+		if slices.Contains(args, "symbolic-ref") {
+			env = append(env, "GG_TEST_COMMAND_STDOUT=origin/main")
+		}
+		env = append(env, envForArgs(args)...)
+		cmd.Env = env
+		return cmd
+	}
+
 	return func() {
 		execCommand = oldExec
 	}
@@ -4441,6 +4512,307 @@ func TestPruneCommandPrintsGitOutput(t *testing.T) {
 	if strings.Contains(output, "nothing to prune") {
 		t.Fatalf("output should NOT contain 'nothing to prune' when git reports work:\n%s", output)
 	}
+}
+
+func TestPruneMergedEntriesFetchFailure(t *testing.T) {
+	container := t.TempDir()
+	gitDir, _ := seedBareRepoAt(t, container)
+	worktreePath := filepath.Join(container, "worktrees", "feature")
+	store := RepoStore{ContainerPath: container, GitDir: gitDir, MainPath: filepath.Join(container, "main"), Managed: true}
+
+	runGit(t, "", "--git-dir", gitDir, "worktree", "add", "-b", "feature", worktreePath, "main")
+	runGit(t, "", "--git-dir", gitDir, "remote", "add", "origin", "https://example.invalid/owner/repo.git")
+
+	oldExec := execCommand
+	defer func() { execCommand = oldExec }()
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		if name == "git" && slices.Contains(args, "fetch") {
+			cmdArgs := []string{"-test.run=TestHelperProcess", "--", name}
+			cmdArgs = append(cmdArgs, args...)
+			cmd := exec.Command(os.Args[0], cmdArgs...)
+			cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1", "GG_TEST_COMMAND_EXIT=1")
+			return cmd
+		}
+		return exec.Command(name, args...)
+	}
+
+	_, err := pruneMergedEntries(store)
+	if err == nil {
+		t.Fatal("pruneMergedEntries() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "fetch remote updates before prune") {
+		t.Fatalf("error = %q, want substring %q", err.Error(), "fetch remote updates before prune")
+	}
+}
+
+func TestPruneMergedEntriesDefaultBaseRefFailure(t *testing.T) {
+	container := t.TempDir()
+	gitDir := filepath.Join(container, ".bare")
+	worktreePath := filepath.Join(container, "worktrees", "feature")
+	store := RepoStore{ContainerPath: container, GitDir: gitDir, MainPath: filepath.Join(container, "main"), Managed: true}
+
+	if err := os.MkdirAll(worktreePath, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(worktreePath, ".git"), []byte("gitdir: test\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	oldExec := execCommand
+	defer func() { execCommand = oldExec }()
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		cmdArgs := []string{"-test.run=TestHelperProcess", "--", name}
+		cmdArgs = append(cmdArgs, args...)
+		cmd := exec.Command(os.Args[0], cmdArgs...)
+		env := append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+		if slices.Contains(args, "config") || slices.Contains(args, "symbolic-ref") || slices.Contains(args, "rev-parse") {
+			env = append(env, "GG_TEST_COMMAND_EXIT=1")
+		}
+		cmd.Env = env
+		return cmd
+	}
+
+	_, err := pruneMergedEntries(store)
+	if err == nil {
+		t.Fatal("pruneMergedEntries() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "could not determine default branch") {
+		t.Fatalf("error = %q, want substring %q", err.Error(), "could not determine default branch")
+	}
+}
+
+func TestWorktreeCleanPropagatesStatusError(t *testing.T) {
+	defer stubExecCommand(t)()
+	t.Setenv("GG_TEST_COMMAND_EXIT", "1")
+
+	clean, err := worktreeClean(t.TempDir())
+	if err == nil {
+		t.Fatal("worktreeClean() error = nil, want error")
+	}
+	if clean {
+		t.Fatal("worktreeClean() clean = true, want false")
+	}
+}
+
+func TestGithubPRMergedOutcomes(t *testing.T) {
+	entry := repoEntry{Kind: "pr", Name: "12", Path: t.TempDir()}
+
+	t.Run("gh unavailable", func(t *testing.T) {
+		defer stubExecLookPath(t, func(string) (string, error) {
+			return "", exec.ErrNotFound
+		})()
+
+		merged, ok := githubPRMerged(entry)
+		if merged || ok {
+			t.Fatalf("githubPRMerged() = %v, %v; want false, false", merged, ok)
+		}
+	})
+
+	t.Run("invalid number", func(t *testing.T) {
+		defer stubExecLookPath(t, func(string) (string, error) {
+			return "/usr/bin/gh", nil
+		})()
+
+		merged, ok := githubPRMerged(repoEntry{Kind: "pr", Name: "nope", Path: t.TempDir()})
+		if merged || ok {
+			t.Fatalf("githubPRMerged() = %v, %v; want false, false", merged, ok)
+		}
+	})
+
+	t.Run("gh view failure", func(t *testing.T) {
+		defer stubExecLookPath(t, func(string) (string, error) {
+			return "/usr/bin/gh", nil
+		})()
+		defer stubExecCommand(t)()
+		t.Setenv("GG_TEST_COMMAND_EXIT", "1")
+
+		merged, ok := githubPRMerged(entry)
+		if merged || ok {
+			t.Fatalf("githubPRMerged() = %v, %v; want false, false", merged, ok)
+		}
+	})
+
+	t.Run("merged", func(t *testing.T) {
+		defer stubExecLookPath(t, func(string) (string, error) {
+			return "/usr/bin/gh", nil
+		})()
+		defer stubExecCommand(t)()
+		t.Setenv("GG_TEST_COMMAND_STDOUT", "2026-04-30T10:00:00Z\n")
+
+		merged, ok := githubPRMerged(entry)
+		if !merged || !ok {
+			t.Fatalf("githubPRMerged() = %v, %v; want true, true", merged, ok)
+		}
+	})
+
+	t.Run("not merged", func(t *testing.T) {
+		defer stubExecLookPath(t, func(string) (string, error) {
+			return "/usr/bin/gh", nil
+		})()
+		defer stubExecCommand(t)()
+
+		merged, ok := githubPRMerged(entry)
+		if merged || !ok {
+			t.Fatalf("githubPRMerged() = %v, %v; want false, true", merged, ok)
+		}
+	})
+}
+
+func TestEntryMergedUsesGithubPRState(t *testing.T) {
+	defer stubExecLookPath(t, func(string) (string, error) {
+		return "/usr/bin/gh", nil
+	})()
+	defer stubExecCommand(t)()
+	t.Setenv("GG_TEST_COMMAND_STDOUT", "2026-04-30T10:00:00Z\n")
+
+	merged, err := entryMerged(repoEntry{Kind: "pr", Name: "7", Path: t.TempDir()}, "main")
+	if err != nil {
+		t.Fatalf("entryMerged() error = %v", err)
+	}
+	if !merged {
+		t.Fatal("entryMerged() = false, want true")
+	}
+
+	commands := readCommandLog(t)
+	if len(commands) != 1 || !strings.Contains(commands[0], "gh\tpr\tview\t7") {
+		t.Fatalf("commands = %v, want exactly gh pr view", commands)
+	}
+}
+
+func TestRemoveWorktreeKeepsMissingBranch(t *testing.T) {
+	container := t.TempDir()
+	gitDir, _ := seedBareRepoAt(t, container)
+	worktreePath := filepath.Join(container, "worktrees", "detached")
+	store := RepoStore{ContainerPath: container, GitDir: gitDir, MainPath: filepath.Join(container, "main"), Managed: true}
+
+	runGit(t, "", "--git-dir", gitDir, "worktree", "add", "--detach", worktreePath, "main")
+
+	err := removeWorktree(store, repoEntry{Kind: "worktree", Name: "detached", Path: worktreePath})
+	if err != nil {
+		t.Fatalf("removeWorktree() error = %v", err)
+	}
+	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
+		t.Fatalf("detached worktree still exists: %v", err)
+	}
+}
+
+func TestRemoveWorktreeBranchDeleteFailure(t *testing.T) {
+	container := t.TempDir()
+	gitDir, _ := seedBareRepoAt(t, container)
+	worktreePath := filepath.Join(container, "worktrees", "feature")
+	store := RepoStore{ContainerPath: container, GitDir: gitDir, MainPath: filepath.Join(container, "main"), Managed: true}
+
+	runGit(t, "", "--git-dir", gitDir, "worktree", "add", "-b", "feature", worktreePath, "main")
+
+	oldExec := execCommand
+	defer func() { execCommand = oldExec }()
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		if name == "git" && slices.Contains(args, "branch") && slices.Contains(args, "-D") {
+			cmdArgs := []string{"-test.run=TestHelperProcess", "--", name}
+			cmdArgs = append(cmdArgs, args...)
+			cmd := exec.Command(os.Args[0], cmdArgs...)
+			cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1", "GG_TEST_COMMAND_EXIT=1")
+			return cmd
+		}
+		return exec.Command(name, args...)
+	}
+
+	err := removeWorktree(store, repoEntry{Kind: "worktree", Name: "feature", Path: worktreePath})
+	if err == nil {
+		t.Fatal("removeWorktree() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "delete merged branch") {
+		t.Fatalf("error = %q, want substring %q", err.Error(), "delete merged branch")
+	}
+}
+
+func TestRepoHasOriginRemoteUnexpectedGitError(t *testing.T) {
+	defer stubExecCommand(t)()
+	t.Setenv("GG_TEST_COMMAND_EXIT", "2")
+
+	ok, err := repoHasOriginRemote(filepath.Join(t.TempDir(), ".bare"))
+	if err == nil {
+		t.Fatal("repoHasOriginRemote() error = nil, want error")
+	}
+	if ok {
+		t.Fatal("repoHasOriginRemote() ok = true, want false")
+	}
+	if !strings.Contains(err.Error(), "check origin remote") {
+		t.Fatalf("error = %q, want substring %q", err.Error(), "check origin remote")
+	}
+}
+
+func TestEnsureDefaultBranchUpstreamSkipsMissingLocalBranch(t *testing.T) {
+	store := RepoStore{GitDir: filepath.Join(t.TempDir(), ".bare"), MainPath: t.TempDir()}
+
+	defer stubDefaultBranchGit(t, func(args []string) []string {
+		if slices.Contains(args, "refs/heads/main") {
+			return []string{"GG_TEST_COMMAND_EXIT=1"}
+		}
+		return nil
+	})()
+
+	err := ensureDefaultBranchUpstream(store, true)
+	if err != nil {
+		t.Fatalf("ensureDefaultBranchUpstream() error = %v", err)
+	}
+
+	for _, command := range readCommandLog(t) {
+		if strings.Contains(command, "branch\t--set-upstream-to") {
+			t.Fatalf("set-upstream command should not run when local branch is missing: %v", command)
+		}
+	}
+}
+
+func TestEnsureDefaultBranchUpstreamSetFailure(t *testing.T) {
+	store := RepoStore{GitDir: filepath.Join(t.TempDir(), ".bare"), MainPath: t.TempDir()}
+
+	defer stubDefaultBranchGit(t, func(args []string) []string {
+		if slices.Contains(args, "branch") && slices.Contains(args, "--set-upstream-to=origin/main") {
+			return []string{"GG_TEST_COMMAND_EXIT=1"}
+		}
+		return nil
+	})()
+
+	err := ensureDefaultBranchUpstream(store, true)
+	if err == nil {
+		t.Fatal("ensureDefaultBranchUpstream() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "set upstream") {
+		t.Fatalf("error = %q, want substring %q", err.Error(), "set upstream")
+	}
+}
+
+func TestConfigureGitHubDefaultRepoErrors(t *testing.T) {
+	t.Run("look path error", func(t *testing.T) {
+		defer stubExecLookPath(t, func(string) (string, error) {
+			return "", errors.New("permission denied")
+		})()
+
+		err := configureGitHubDefaultRepo(t.TempDir(), Repo{Owner: "owner", Name: "repo"})
+		if err == nil {
+			t.Fatal("configureGitHubDefaultRepo() error = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "find gh CLI") {
+			t.Fatalf("error = %q, want substring %q", err.Error(), "find gh CLI")
+		}
+	})
+
+	t.Run("set default failure", func(t *testing.T) {
+		defer stubExecLookPath(t, func(string) (string, error) {
+			return "/usr/bin/gh", nil
+		})()
+		defer stubExecCommand(t)()
+		t.Setenv("GG_TEST_COMMAND_EXIT", "1")
+
+		err := configureGitHubDefaultRepo(t.TempDir(), Repo{Owner: "owner", Name: "repo"})
+		if err == nil {
+			t.Fatal("configureGitHubDefaultRepo() error = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "set gh default repo") {
+			t.Fatalf("error = %q, want substring %q", err.Error(), "set gh default repo")
+		}
+	})
 }
 
 func TestEnsureRequestPRBranch(t *testing.T) {
