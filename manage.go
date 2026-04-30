@@ -1,10 +1,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -154,6 +157,11 @@ func pruneCommand(args []string) error {
 		return fmt.Errorf("prune worktrees for %s: %w", store.ContainerPath, err)
 	}
 
+	removedMerged, err := pruneMergedEntries(store)
+	if err != nil {
+		return err
+	}
+
 	var removed []string
 	for _, dir := range []string{
 		filepath.Join(store.ContainerPath, "worktrees"),
@@ -171,11 +179,150 @@ func pruneCommand(args []string) error {
 	if output != "" {
 		fmt.Println(output)
 	}
+	for _, entry := range removedMerged {
+		fmt.Printf("removed merged %s %s %s\n", entry.Kind, entry.Name, entry.Path)
+	}
 	for _, path := range removed {
 		fmt.Printf("removed empty directory %s\n", path)
 	}
-	if output == "" && len(removed) == 0 {
+	if output == "" && len(removedMerged) == 0 && len(removed) == 0 {
 		fmt.Println("nothing to prune")
+	}
+
+	return nil
+}
+
+func pruneMergedEntries(store RepoStore) ([]repoEntry, error) {
+	entries, err := listRepoEntries(store)
+	if err != nil {
+		// untestable: passthrough — listRepoEntries error is wrapped at its source.
+		return nil, err
+	}
+
+	var candidates []repoEntry
+	for _, entry := range entries {
+		if entry.Kind == "worktree" || entry.Kind == "pr" {
+			candidates = append(candidates, entry)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+
+	if hasRemote, _ := repoHasOriginRemote(store.GitDir); hasRemote {
+		if err := runCommand("", "git", "--git-dir", store.GitDir, "fetch", "--prune", "origin"); err != nil {
+			return nil, fmt.Errorf("fetch remote updates before prune: %w", err)
+		}
+	}
+
+	baseRef, err := defaultBaseRef(store.GitDir)
+	if err != nil {
+		return nil, err
+	}
+
+	var removed []repoEntry
+	for _, entry := range candidates {
+		clean, err := worktreeClean(entry.Path)
+		if err != nil {
+			return nil, fmt.Errorf("check %s %s status: %w", entry.Kind, entry.Name, err)
+		}
+		if !clean {
+			fmt.Printf("skipped dirty %s %s %s\n", entry.Kind, entry.Name, entry.Path)
+			continue
+		}
+
+		merged, err := entryMerged(entry, baseRef)
+		if err != nil {
+			return nil, err
+		}
+		if !merged {
+			continue
+		}
+
+		if err := removeWorktree(store, entry); err != nil {
+			return nil, err
+		}
+		removed = append(removed, entry)
+	}
+
+	return removed, nil
+}
+
+func worktreeClean(path string) (bool, error) {
+	output, err := captureCommand(path, "git", "status", "--porcelain")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(output) == "", nil
+}
+
+func entryMerged(entry repoEntry, baseRef string) (bool, error) {
+	if entry.Kind == "pr" {
+		merged, ok := githubPRMerged(entry)
+		if ok {
+			return merged, nil
+		}
+	}
+
+	merged, err := headMergedInto(entry.Path, baseRef)
+	if err != nil {
+		return false, fmt.Errorf("check whether %s %s is merged into %s: %w", entry.Kind, entry.Name, baseRef, err)
+	}
+	return merged, nil
+}
+
+func githubPRMerged(entry repoEntry) (bool, bool) {
+	if _, err := execLookPath("gh"); err != nil {
+		return false, false
+	}
+
+	number, err := strconv.Atoi(entry.Name)
+	if err != nil || number <= 0 {
+		return false, false
+	}
+
+	output, err := captureCommand(entry.Path, "gh", "pr", "view", strconv.Itoa(number), "--json", "mergedAt", "--jq", ".mergedAt")
+	if err != nil {
+		return false, false
+	}
+
+	return strings.TrimSpace(output) != "", true
+}
+
+func headMergedInto(path, baseRef string) (bool, error) {
+	err := runCommand(path, "git", "merge-base", "--is-ancestor", "HEAD", baseRef)
+	if err == nil {
+		return true, nil
+	}
+
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+
+	return false, err
+}
+
+func removeWorktree(store RepoStore, entry repoEntry) error {
+	if err := runCommand("", "git", "--git-dir", store.GitDir, "worktree", "remove", entry.Path); err != nil {
+		return fmt.Errorf("remove %s %s: %w", entry.Kind, entry.Name, err)
+	}
+
+	if entry.Kind != "worktree" {
+		return nil
+	}
+
+	branchName := branchNameFromWorktree(entry.Name)
+	exists, err := localBranchExists(store.GitDir, branchName)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+
+	if err := runCommand("", "git", "--git-dir", store.GitDir, "branch", "-D", branchName); err != nil {
+		return fmt.Errorf("delete merged branch %q: %w", branchName, err)
 	}
 
 	return nil

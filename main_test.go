@@ -1636,6 +1636,72 @@ func TestPruneCommandRemovesEmptyChildren(t *testing.T) {
 	}
 }
 
+func TestPruneCommandRemovesMergedWorktreeAndPR(t *testing.T) {
+	cfg := setupTestConfig(t)
+
+	container := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
+	gitDir, _ := seedBareRepoAt(t, container)
+	worktreePath := filepath.Join(container, "worktrees", "feature")
+	prPath := filepath.Join(container, "PR", "7")
+
+	runGit(t, "", "--git-dir", gitDir, "worktree", "add", "-b", "feature", worktreePath, "main")
+	runGit(t, "", "--git-dir", gitDir, "worktree", "add", "--detach", prPath, "main")
+
+	output, err := captureStdout(t, func() error {
+		return pruneCommand([]string{"owner/repo"})
+	})
+	if err != nil {
+		t.Fatalf("pruneCommand() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"removed merged worktree feature " + worktreePath,
+		"removed merged pr 7 " + prPath,
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q in:\n%s", want, output)
+		}
+	}
+	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
+		t.Fatalf("merged worktree still exists: %v", err)
+	}
+	if _, err := os.Stat(prPath); !os.IsNotExist(err) {
+		t.Fatalf("merged PR still exists: %v", err)
+	}
+	if err := exec.Command("git", "--git-dir", gitDir, "rev-parse", "--verify", "--quiet", "refs/heads/feature").Run(); err == nil {
+		t.Fatal("feature branch still exists after merged worktree prune")
+	}
+}
+
+func TestPruneCommandKeepsUnmergedWorktree(t *testing.T) {
+	cfg := setupTestConfig(t)
+
+	container := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
+	gitDir, _ := seedBareRepoAt(t, container)
+	worktreePath := filepath.Join(container, "worktrees", "feature")
+
+	runGit(t, "", "--git-dir", gitDir, "worktree", "add", "-b", "feature", worktreePath, "main")
+	if err := os.WriteFile(filepath.Join(worktreePath, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	runGit(t, worktreePath, "add", "feature.txt")
+	runGit(t, worktreePath, "commit", "-m", "feature")
+
+	output, err := captureStdout(t, func() error {
+		return pruneCommand([]string{"owner/repo"})
+	})
+	if err != nil {
+		t.Fatalf("pruneCommand() error = %v", err)
+	}
+
+	if strings.Contains(output, "removed merged worktree") {
+		t.Fatalf("output should not report removing unmerged worktree:\n%s", output)
+	}
+	if _, err := os.Stat(worktreePath); err != nil {
+		t.Fatalf("unmerged worktree missing: %v", err)
+	}
+}
+
 func TestPruneCommandRejectsLocalRepo(t *testing.T) {
 	cfg := setupTestConfig(t)
 
