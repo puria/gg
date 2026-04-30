@@ -498,16 +498,16 @@ func TestShellInitPassesThroughManagementAliases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("shellInit(fish) error = %v", err)
 	}
-	if !strings.Contains(fishScript, "list ls status prune rm") {
-		t.Fatalf("fish shell script missing ls/rm passthrough: %q", fishScript)
+	if !strings.Contains(fishScript, "new list ls status prune rm") {
+		t.Fatalf("fish shell script missing new/ls/rm passthrough: %q", fishScript)
 	}
 
 	bashScript, err := shellInit("bash")
 	if err != nil {
 		t.Fatalf("shellInit(bash) error = %v", err)
 	}
-	if !strings.Contains(bashScript, "|list|ls|status|prune|rm)") {
-		t.Fatalf("bash shell script missing ls/rm passthrough: %q", bashScript)
+	if !strings.Contains(bashScript, "|new|list|ls|status|prune|rm)") {
+		t.Fatalf("bash shell script missing new/ls/rm passthrough: %q", bashScript)
 	}
 }
 
@@ -1066,7 +1066,7 @@ func TestRunHelpVariants(t *testing.T) {
 			if err != nil {
 				t.Fatalf("run(%q) error = %v", arg, err)
 			}
-			for _, want := range []string{"alias", "list", "status", "prune", "shell-init"} {
+			for _, want := range []string{"alias", "new", "list", "status", "prune", "shell-init"} {
 				if !strings.Contains(output, want) {
 					t.Fatalf("run(%q) usage missing %q in:\n%s", arg, want, output)
 				}
@@ -1106,6 +1106,332 @@ func TestRunConfigPath(t *testing.T) {
 	if got != configPath {
 		t.Fatalf("config-path output = %q, want %q", got, configPath)
 	}
+}
+
+func TestNewCommandCreatesRepositoryFromMarkdownTemplates(t *testing.T) {
+	cfg := setupTestConfig(t)
+
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	t.Setenv("GG_TEST_COMMAND_LOG", logPath)
+
+	oldExec := execCommand
+	defer func() { execCommand = oldExec }()
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		if name == "git" && len(args) == 5 && args[0] == "clone" && args[4] != "" {
+			templateRoot := args[4]
+			if err := os.MkdirAll(filepath.Join(templateRoot, "nested"), 0o755); err != nil {
+				t.Fatalf("MkdirAll() error = %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(templateRoot, "README.md"), []byte("# Template\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(templateRoot, "nested", "NOTES.md"), []byte("notes\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(templateRoot, "ignore.txt"), []byte("ignore\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+		}
+
+		cmdArgs := []string{"-test.run=TestHelperProcess", "--", name}
+		cmdArgs = append(cmdArgs, args...)
+		cmd := exec.Command(os.Args[0], cmdArgs...)
+		cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+		return cmd
+	}
+
+	output, err := captureStdout(t, func() error {
+		return newCommand([]string{"owner/repo"})
+	})
+	if err != nil {
+		t.Fatalf("newCommand() error = %v", err)
+	}
+
+	repoPath := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
+	if strings.TrimSpace(output) != repoPath {
+		t.Fatalf("output = %q, want %q", strings.TrimSpace(output), repoPath)
+	}
+	if _, err := os.Stat(filepath.Join(repoPath, "README.md")); err != nil {
+		t.Fatalf("README.md missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repoPath, "nested", "NOTES.md")); err != nil {
+		t.Fatalf("nested NOTES.md missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repoPath, "ignore.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ignore.txt exists or unexpected stat error: %v", err)
+	}
+
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	log := string(logData)
+	for _, want := range []string{
+		"git\tclone\t--depth\t1\thttps://github.com/puria/md.git",
+		"git\tinit",
+		"git\tadd\t--all",
+		"git\tcommit\t-m\t" + initialCommitMsg,
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("command log missing %q in:\n%s", want, log)
+		}
+	}
+}
+
+func TestRunNewCommand(t *testing.T) {
+	cfg := setupTestConfig(t)
+	defer stubNewCommandGit(t, "", true)()
+
+	output, err := captureStdout(t, func() error {
+		return run([]string{"new", "owner/repo"})
+	})
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	repoPath := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
+	if strings.TrimSpace(output) != repoPath {
+		t.Fatalf("output = %q, want %q", strings.TrimSpace(output), repoPath)
+	}
+}
+
+func TestNewCommandRejectsExistingRepository(t *testing.T) {
+	cfg := setupTestConfig(t)
+	existing := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
+	if err := os.MkdirAll(existing, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	err := newCommand([]string{"owner/repo"})
+	if err == nil {
+		t.Fatal("newCommand() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "repository already exists") {
+		t.Fatalf("error = %q, want repository already exists", err.Error())
+	}
+}
+
+func TestNewCommandRejectsInvalidArgs(t *testing.T) {
+	err := newCommand(nil)
+	if err == nil {
+		t.Fatal("newCommand() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "usage: gg new") {
+		t.Fatalf("error = %q, want usage", err.Error())
+	}
+}
+
+func TestNewCommandRejectsInvalidRepoSpec(t *testing.T) {
+	setupTestConfig(t)
+
+	err := newCommand([]string{"owner/repo/extra"})
+	if err == nil {
+		t.Fatal("newCommand() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "repository must be in the form owner/repo") {
+		t.Fatalf("error = %q, want repository form error", err.Error())
+	}
+}
+
+func TestNewCommandPropagatesConfigLoadFailure(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config")
+	t.Setenv("GG_CONFIG", configPath)
+	t.Setenv("HOME", t.TempDir())
+	if err := os.WriteFile(configPath, []byte("{"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	err := newCommand([]string{"owner/repo"})
+	if err == nil {
+		t.Fatal("newCommand() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "parse config") {
+		t.Fatalf("error = %q, want parse config", err.Error())
+	}
+}
+
+func TestNewCommandFilesystemFailures(t *testing.T) {
+	t.Run("stat", func(t *testing.T) {
+		setupTestConfig(t)
+
+		oldStat := osStat
+		defer func() { osStat = oldStat }()
+		osStat = func(string) (os.FileInfo, error) {
+			return nil, errors.New("boom")
+		}
+
+		err := newCommand([]string{"owner/repo"})
+		if err == nil {
+			t.Fatal("newCommand() error = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "stat") {
+			t.Fatalf("error = %q, want stat error", err.Error())
+		}
+	})
+
+	t.Run("mkdir repo", func(t *testing.T) {
+		setupTestConfig(t)
+
+		oldMkdirAll := osMkdirAll
+		defer func() { osMkdirAll = oldMkdirAll }()
+		osMkdirAll = func(string, os.FileMode) error {
+			return errors.New("boom")
+		}
+
+		err := newCommand([]string{"owner/repo"})
+		if err == nil {
+			t.Fatal("newCommand() error = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "create repository directory") {
+			t.Fatalf("error = %q, want create repository directory", err.Error())
+		}
+	})
+
+	t.Run("mkdir temp", func(t *testing.T) {
+		setupTestConfig(t)
+
+		oldMkdirTemp := osMkdirTemp
+		defer func() { osMkdirTemp = oldMkdirTemp }()
+		osMkdirTemp = func(string, string) (string, error) {
+			return "", errors.New("boom")
+		}
+
+		err := newCommand([]string{"owner/repo"})
+		if err == nil {
+			t.Fatal("newCommand() error = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "create template download directory") {
+			t.Fatalf("error = %q, want template download directory", err.Error())
+		}
+	})
+}
+
+func TestNewCommandGitAndTemplateFailures(t *testing.T) {
+	cases := []struct {
+		name    string
+		failArg string
+		want    string
+	}{
+		{name: "clone", failArg: "clone", want: "download markdown templates"},
+		{name: "init", failArg: "init", want: "initialize git repository"},
+		{name: "add", failArg: "add", want: "stage initial files"},
+		{name: "commit", failArg: "commit", want: "create initial commit"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setupTestConfig(t)
+			defer stubNewCommandGit(t, tc.failArg, true)()
+
+			err := newCommand([]string{"owner/repo"})
+			if err == nil {
+				t.Fatal("newCommand() error = nil, want error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tc.want)
+			}
+		})
+	}
+
+	t.Run("no markdown", func(t *testing.T) {
+		setupTestConfig(t)
+		defer stubNewCommandGit(t, "", false)()
+
+		err := newCommand([]string{"owner/repo"})
+		if err == nil {
+			t.Fatal("newCommand() error = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "no markdown files found") {
+			t.Fatalf("error = %q, want no markdown files found", err.Error())
+		}
+	})
+}
+
+func TestCopyMarkdownFilesPropagatesWalkError(t *testing.T) {
+	err := copyMarkdownFiles(filepath.Join(t.TempDir(), "missing"), t.TempDir())
+	if err == nil {
+		t.Fatal("copyMarkdownFiles() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "copy markdown templates") {
+		t.Fatalf("error = %q, want copy markdown templates", err.Error())
+	}
+}
+
+func TestCopyMarkdownFilesSkipsGitDirectory(t *testing.T) {
+	src := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(src, ".git"), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, ".git", "README.md"), []byte("git internals\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	err := copyMarkdownFiles(src, t.TempDir())
+	if err == nil {
+		t.Fatal("copyMarkdownFiles() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "no markdown files found") {
+		t.Fatalf("error = %q, want no markdown files found", err.Error())
+	}
+}
+
+func TestCopyFileFailures(t *testing.T) {
+	t.Run("missing source", func(t *testing.T) {
+		err := copyFile(filepath.Join(t.TempDir(), "missing.md"), filepath.Join(t.TempDir(), "README.md"))
+		if err == nil {
+			t.Fatal("copyFile() error = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "open template file") {
+			t.Fatalf("error = %q, want open template file", err.Error())
+		}
+	})
+
+	t.Run("mkdir", func(t *testing.T) {
+		src := filepath.Join(t.TempDir(), "README.md")
+		if err := os.WriteFile(src, []byte("template\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+
+		oldMkdirAll := osMkdirAll
+		defer func() { osMkdirAll = oldMkdirAll }()
+		osMkdirAll = func(string, os.FileMode) error {
+			return errors.New("boom")
+		}
+
+		err := copyFile(src, filepath.Join(t.TempDir(), "nested", "README.md"))
+		if err == nil {
+			t.Fatal("copyFile() error = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "create template directory") {
+			t.Fatalf("error = %q, want create template directory", err.Error())
+		}
+	})
+
+	t.Run("create destination", func(t *testing.T) {
+		src := filepath.Join(t.TempDir(), "README.md")
+		if err := os.WriteFile(src, []byte("template\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		dst := t.TempDir()
+
+		err := copyFile(src, dst)
+		if err == nil {
+			t.Fatal("copyFile() error = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "create template file") {
+			t.Fatalf("error = %q, want create template file", err.Error())
+		}
+	})
+
+	t.Run("copy data", func(t *testing.T) {
+		err := copyFile(t.TempDir(), filepath.Join(t.TempDir(), "README.md"))
+		if err == nil {
+			t.Fatal("copyFile() error = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "copy template file") {
+			t.Fatalf("error = %q, want copy template file", err.Error())
+		}
+	})
 }
 
 func TestRunShellInitVariants(t *testing.T) {
@@ -3652,6 +3978,41 @@ func stubExecCommand(t *testing.T) func() {
 		cmdArgs = append(cmdArgs, args...)
 		cmd := exec.Command(os.Args[0], cmdArgs...)
 		cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+		return cmd
+	}
+
+	return func() {
+		execCommand = oldExecCommand
+	}
+}
+
+func stubNewCommandGit(t *testing.T, failArg string, withMarkdown bool) func() {
+	t.Helper()
+
+	oldExecCommand := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		if name == "git" && len(args) == 5 && args[0] == "clone" && args[4] != "" {
+			templateRoot := args[4]
+			if err := os.MkdirAll(templateRoot, 0o755); err != nil {
+				t.Fatalf("MkdirAll() error = %v", err)
+			}
+			fileName := "README.txt"
+			if withMarkdown {
+				fileName = "README.md"
+			}
+			if err := os.WriteFile(filepath.Join(templateRoot, fileName), []byte("template\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+		}
+
+		cmdArgs := []string{"-test.run=TestHelperProcess", "--", name}
+		cmdArgs = append(cmdArgs, args...)
+		cmd := exec.Command(os.Args[0], cmdArgs...)
+		env := append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+		if failArg != "" {
+			env = append(env, "GG_TEST_FAIL_ON_EXACT_ARG="+failArg)
+		}
+		cmd.Env = env
 		return cmd
 	}
 

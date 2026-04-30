@@ -17,6 +17,7 @@ The Go binary prints or manages paths. The shell function is what performs `cd`.
 - Lint: `golangci-lint run ./...`
 - Task aliases: `task build`, `task test`, `task lint`
 - Before finishing work, always run the lint step relevant to CI and do not report completion until it passes
+- Before finishing work, always run the coverage gate with `task test` and do not report completion unless total coverage is at least 95%
 
 The user currently links `bin/gg` into `~/.local/bin/gg`.
 
@@ -92,6 +93,7 @@ Reserved top-level command names currently include:
 - `path`
 - `config-path`
 - `alias`
+- `new`
 - `init-config`
 - `shell-init`
 - `list`
