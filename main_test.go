@@ -498,7 +498,7 @@ func TestShellInitPassesThroughManagementAliases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("shellInit(fish) error = %v", err)
 	}
-	if !strings.Contains(fishScript, "new list ls status prune rm") {
+	if !strings.Contains(fishScript, "new list ls status starship prune rm") {
 		t.Fatalf("fish shell script missing new/ls/rm passthrough: %q", fishScript)
 	}
 
@@ -506,7 +506,7 @@ func TestShellInitPassesThroughManagementAliases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("shellInit(bash) error = %v", err)
 	}
-	if !strings.Contains(bashScript, "|new|list|ls|status|prune|rm)") {
+	if !strings.Contains(bashScript, "|new|list|ls|status|starship|prune|rm)") {
 		t.Fatalf("bash shell script missing new/ls/rm passthrough: %q", bashScript)
 	}
 }
@@ -1066,7 +1066,7 @@ func TestRunHelpVariants(t *testing.T) {
 			if err != nil {
 				t.Fatalf("run(%q) error = %v", arg, err)
 			}
-			for _, want := range []string{"alias", "new", "list", "status", "prune", "shell-init"} {
+			for _, want := range []string{"alias", "new", "list", "status", "starship", "prune", "shell-init"} {
 				if !strings.Contains(output, want) {
 					t.Fatalf("run(%q) usage missing %q in:\n%s", arg, want, output)
 				}
@@ -1909,6 +1909,93 @@ func TestStatusCommandMissingRepo(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not available locally") {
 		t.Fatalf("error = %q, want substring %q", err.Error(), "not available locally")
+	}
+}
+
+func TestStarshipCommandWorktree(t *testing.T) {
+	cfg := setupTestConfig(t)
+
+	path := filepath.Join(cfg.Root, cfg.Host, "owner", "repo", "worktrees", "feature-x", "pkg")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	t.Chdir(path)
+
+	output, err := captureStdout(t, func() error {
+		return starshipCommand([]string{"worktree"})
+	})
+	if err != nil {
+		t.Fatalf("starshipCommand() error = %v", err)
+	}
+	if strings.TrimSpace(output) != "feature-x" {
+		t.Fatalf("output = %q, want feature-x", strings.TrimSpace(output))
+	}
+
+	output, err = captureStdout(t, func() error {
+		return starshipCommand(nil)
+	})
+	if err != nil {
+		t.Fatalf("starshipCommand() error = %v", err)
+	}
+	if strings.TrimSpace(output) != "owner/repo wt:feature-x" {
+		t.Fatalf("summary = %q, want owner/repo wt:feature-x", strings.TrimSpace(output))
+	}
+}
+
+func TestStarshipCommandPR(t *testing.T) {
+	cfg := setupTestConfig(t)
+
+	path := filepath.Join(cfg.Root, cfg.Host, "owner", "repo", "PR", "99", "pkg")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	t.Chdir(path)
+
+	output, err := captureStdout(t, func() error {
+		return starshipCommand([]string{"pr"})
+	})
+	if err != nil {
+		t.Fatalf("starshipCommand() error = %v", err)
+	}
+	if strings.TrimSpace(output) != "#99" {
+		t.Fatalf("output = %q, want #99", strings.TrimSpace(output))
+	}
+
+	output, err = captureStdout(t, func() error {
+		return starshipCommand([]string{"worktree"})
+	})
+	if !errors.Is(err, errSilent) {
+		t.Fatalf("starshipCommand() error = %v, want silent exit", err)
+	}
+	if strings.TrimSpace(output) != "" {
+		t.Fatalf("worktree output = %q, want empty for PR", strings.TrimSpace(output))
+	}
+}
+
+func TestStarshipCommandOutsideRootIsQuiet(t *testing.T) {
+	setupTestConfig(t)
+	t.Chdir(t.TempDir())
+
+	output, err := captureStdout(t, func() error {
+		return starshipCommand(nil)
+	})
+	if !errors.Is(err, errSilent) {
+		t.Fatalf("starshipCommand() error = %v, want silent exit", err)
+	}
+	if strings.TrimSpace(output) != "" {
+		t.Fatalf("output = %q, want empty outside gg root", strings.TrimSpace(output))
+	}
+}
+
+func TestStarshipCommandInvalidPart(t *testing.T) {
+	setupTestConfig(t)
+
+	err := starshipCommand([]string{"nope"})
+	if err == nil {
+		t.Fatal("starshipCommand() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "usage: gg starship") {
+		t.Fatalf("error = %q, want usage", err.Error())
 	}
 }
 
