@@ -102,12 +102,13 @@ gg credimi newworktree
 gg credimi 99
 gg list credimi
 gg status credimi
+gg starship
 gg prune credimi
 ```
 
 The binary prints the local checkout path and clones the repo first if it does not exist yet.
 
-`list`, `status`, and `prune` are reserved command names. If you ever need an owner or repo alias with one of those names, use `gg path ...` as the escape hatch.
+`list`, `status`, `starship`, and `prune` are reserved command names. If you ever need an owner or repo alias with one of those names, use `gg path ...` as the escape hatch.
 
 ## Worktrees And PRs
 
@@ -139,6 +140,7 @@ These commands do not `cd`; they print information or perform maintenance:
 ```bash
 gg list credimi
 gg status credimi
+gg starship
 gg prune credimi
 ```
 
@@ -146,7 +148,32 @@ Behavior:
 
 - `gg list credimi` prints `main`, `worktrees/*`, and `PR/*` entries for the managed repo
 - `gg status credimi` runs `git status --short --branch` for each known worktree
+- `gg starship` prints prompt-friendly metadata for the current checkout, and `gg starship repo|kind|name|worktree|pr` prints individual parts for custom Starship modules
 - `gg prune credimi` removes clean `worktrees/*` and `PR/*` checkouts that are already merged into the default branch, then cleans stale Git worktree metadata and leftover empty directories
+
+### Starship
+
+Add custom modules to `~/.config/starship.toml` to show separate pills only when the current directory is inside a matching `gg` checkout:
+
+```toml
+[custom.gg_repo]
+command = "command gg starship repo"
+when = "command gg starship repo"
+format = "[  $output ]($style)"
+style = "bold white bg:blue"
+
+[custom.gg_worktree]
+command = "command gg starship worktree"
+when = "command gg starship worktree"
+format = "[  $output ]($style)"
+style = "bold black bg:green"
+
+[custom.gg_pr]
+command = "command gg starship pr"
+when = "command gg starship pr"
+format = "[  $output ]($style)"
+style = "bold black bg:yellow"
+```
 
 ## Shell Integration
 
@@ -163,7 +190,7 @@ Or inline:
 ```fish
 function gg --description 'manage git repos'
     switch "$argv[1]"
-    case help -h --help version --version shell-init config-path init-config path alias list ls status prune rm
+    case help -h --help version --version shell-init config-path init-config path alias list ls status starship prune rm
         command gg $argv
         return $status
     end

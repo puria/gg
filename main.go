@@ -8,9 +8,14 @@ import (
 
 var version = "dev"
 
+var errSilent = errors.New("silent exit") //nolint:gochecknoglobals
+
 // untestable: main() is the process entrypoint; os.Exit paths aren't exercised in tests.
 func main() {
 	if err := run(os.Args[1:]); err != nil {
+		if errors.Is(err, errSilent) {
+			os.Exit(1)
+		}
 		fmt.Fprintln(os.Stderr, "gg:", err)
 		os.Exit(1)
 	}
@@ -41,6 +46,8 @@ func run(args []string) error {
 		return listCommand(args[1:])
 	case args[0] == "status":
 		return statusCommand(args[1:])
+	case args[0] == "starship":
+		return starshipCommand(args[1:])
 	case args[0] == "prune" || args[0] == "rm":
 		return pruneCommand(args[1:])
 	case args[0] == "init-config":
@@ -103,6 +110,7 @@ Usage:
   gg status <owner/repo>
   gg status <owner> <repo>
   gg status --files <owner/repo>
+  gg starship [repo|kind|name|worktree|pr]
   gg prune <owner/repo>
   gg prune <owner> <repo>
   gg rm <owner/repo>
@@ -123,6 +131,7 @@ Behavior:
   - can check out PRs under <repo>/PR/<number>
   - supports ls/list, status, and rm/prune for managed repo worktrees
   - status prints branch plus clean/dirty summary; use --files for changed paths
+  - starship prints prompt-friendly metadata for the current gg checkout
   - prints the target local path
 `)
 }
