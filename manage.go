@@ -253,7 +253,63 @@ func worktreeClean(path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return strings.TrimSpace(output) == "", nil
+	if strings.TrimSpace(output) != "" {
+		return false, nil
+	}
+
+	stashed, err := worktreeHasStash(path)
+	if err != nil {
+		return false, err
+	}
+
+	return !stashed, nil
+}
+
+func worktreeHasStash(path string) (bool, error) {
+	stashes, err := captureCommand(path, "git", "stash", "list", "--format=%gs")
+	if err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(stashes) == "" {
+		return false, nil
+	}
+
+	branch, err := captureCommand(path, "git", "branch", "--show-current")
+	if err != nil {
+		return false, err
+	}
+
+	head, err := captureCommand(path, "git", "rev-parse", "--short", "HEAD")
+	if err != nil {
+		return false, err
+	}
+
+	for _, stash := range strings.Split(stashes, "\n") {
+		if stashMatchesWorktree(stash, branch, head) {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+func stashMatchesWorktree(stash, branch, head string) bool {
+	stash = strings.TrimSpace(stash)
+	if stash == "" {
+		return false
+	}
+
+	if branch != "" {
+		if strings.HasPrefix(stash, "WIP on "+branch+":") || strings.HasPrefix(stash, "On "+branch+":") {
+			return true
+		}
+	}
+
+	if head == "" {
+		return false
+	}
+
+	return strings.Contains(stash, ": "+head+" ") || strings.HasSuffix(stash, ": "+head)
 }
 
 func entryMerged(entry repoEntry, baseRef string) (bool, error) {

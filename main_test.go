@@ -2087,6 +2087,37 @@ func TestPruneCommandSkipsDirtyWorktree(t *testing.T) {
 	}
 }
 
+func TestPruneCommandSkipsStashedWorktree(t *testing.T) {
+	cfg := setupTestConfig(t)
+
+	container := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
+	gitDir, _ := seedBareRepoAt(t, container)
+	worktreePath := filepath.Join(container, "worktrees", "stashed")
+
+	runGit(t, "", "--git-dir", gitDir, "worktree", "add", "-b", "stashed", worktreePath, "main")
+	if err := os.WriteFile(filepath.Join(worktreePath, "README.md"), []byte("stashed change\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	runGit(t, worktreePath, "stash", "push", "-m", "keep my work")
+
+	output, err := captureStdout(t, func() error {
+		return pruneCommand([]string{"owner/repo"})
+	})
+	if err != nil {
+		t.Fatalf("pruneCommand() error = %v", err)
+	}
+
+	if !strings.Contains(output, "skipped dirty worktree stashed "+worktreePath) {
+		t.Fatalf("output missing stashed skip in:\n%s", output)
+	}
+	if strings.Contains(output, "removed merged worktree stashed "+worktreePath) {
+		t.Fatalf("output should not report removing stashed worktree:\n%s", output)
+	}
+	if _, err := os.Stat(worktreePath); err != nil {
+		t.Fatalf("stashed worktree missing: %v", err)
+	}
+}
+
 func TestPruneCommandRejectsLocalRepo(t *testing.T) {
 	cfg := setupTestConfig(t)
 
@@ -4967,6 +4998,173 @@ func TestWorktreeCleanPropagatesStatusError(t *testing.T) {
 	}
 }
 
+func TestWorktreeCleanReturnsTrueForCleanRepoWithoutStash(t *testing.T) {
+	container := t.TempDir()
+	_, mainPath := seedBareRepoAt(t, container)
+
+	clean, err := worktreeClean(mainPath)
+	if err != nil {
+		t.Fatalf("worktreeClean() error = %v", err)
+	}
+	if !clean {
+		t.Fatal("worktreeClean() clean = false, want true")
+	}
+}
+
+func TestWorktreeCleanReturnsFalseForDirtyRepo(t *testing.T) {
+	container := t.TempDir()
+	_, mainPath := seedBareRepoAt(t, container)
+
+	if err := os.WriteFile(filepath.Join(mainPath, "scratch.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	clean, err := worktreeClean(mainPath)
+	if err != nil {
+		t.Fatalf("worktreeClean() error = %v", err)
+	}
+	if clean {
+		t.Fatal("worktreeClean() clean = true, want false")
+	}
+}
+
+func TestWorktreeHasStashReturnsFalseWhenEmpty(t *testing.T) {
+	container := t.TempDir()
+	_, mainPath := seedBareRepoAt(t, container)
+
+	stashed, err := worktreeHasStash(mainPath)
+	if err != nil {
+		t.Fatalf("worktreeHasStash() error = %v", err)
+	}
+	if stashed {
+		t.Fatal("worktreeHasStash() = true, want false")
+	}
+}
+
+func TestWorktreeHasStashPropagatesBranchError(t *testing.T) {
+	container := t.TempDir()
+	_, mainPath := seedBareRepoAt(t, container)
+
+	oldExec := execCommand
+	defer func() { execCommand = oldExec }()
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		if name == "git" && len(args) >= 2 && args[0] == "branch" && args[1] == "--show-current" {
+			cmdArgs := []string{"-test.run=TestHelperProcess", "--", name}
+			cmdArgs = append(cmdArgs, args...)
+			cmd := exec.Command(os.Args[0], cmdArgs...)
+			cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1", "GG_TEST_COMMAND_EXIT=1")
+			return cmd
+		}
+		return exec.Command(name, args...)
+	}
+
+	if err := os.WriteFile(filepath.Join(mainPath, "README.md"), []byte("stashed change\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	runGit(t, mainPath, "stash", "push", "-m", "keep my work")
+
+	_, err := worktreeHasStash(mainPath)
+	if err == nil {
+		t.Fatal("worktreeHasStash() error = nil, want error")
+	}
+}
+
+func TestWorktreeHasStashReturnsFalseWhenNoEntriesMatch(t *testing.T) {
+	container := t.TempDir()
+	_, mainPath := seedBareRepoAt(t, container)
+
+	oldExec := execCommand
+	defer func() { execCommand = oldExec }()
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		if name != "git" {
+			return exec.Command(name, args...)
+		}
+
+		cmdArgs := []string{"-test.run=TestHelperProcess", "--", name}
+		cmdArgs = append(cmdArgs, args...)
+		cmd := exec.Command(os.Args[0], cmdArgs...)
+		env := append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+
+		switch {
+		case len(args) >= 3 && args[0] == "stash" && args[1] == "list":
+			env = append(env, "GG_TEST_COMMAND_STDOUT=WIP on other: def5678 seed\n")
+		case len(args) >= 2 && args[0] == "branch" && args[1] == "--show-current":
+			env = append(env, "GG_TEST_COMMAND_STDOUT=feature\n")
+		case len(args) >= 3 && args[0] == "rev-parse" && args[1] == "--short":
+			env = append(env, "GG_TEST_COMMAND_STDOUT=abc1234\n")
+		}
+
+		cmd.Env = env
+		return cmd
+	}
+
+	stashed, err := worktreeHasStash(mainPath)
+	if err != nil {
+		t.Fatalf("worktreeHasStash() error = %v", err)
+	}
+	if stashed {
+		t.Fatal("worktreeHasStash() = true, want false")
+	}
+}
+
+func TestWorktreeHasStashPropagatesHeadError(t *testing.T) {
+	container := t.TempDir()
+	_, mainPath := seedBareRepoAt(t, container)
+
+	oldExec := execCommand
+	defer func() { execCommand = oldExec }()
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		if name == "git" && len(args) >= 2 && args[0] == "rev-parse" && args[1] == "--short" {
+			cmdArgs := []string{"-test.run=TestHelperProcess", "--", name}
+			cmdArgs = append(cmdArgs, args...)
+			cmd := exec.Command(os.Args[0], cmdArgs...)
+			cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1", "GG_TEST_COMMAND_EXIT=1")
+			return cmd
+		}
+		return exec.Command(name, args...)
+	}
+
+	if err := os.WriteFile(filepath.Join(mainPath, "README.md"), []byte("stashed change\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	runGit(t, mainPath, "stash", "push", "-m", "keep my work")
+
+	_, err := worktreeHasStash(mainPath)
+	if err == nil {
+		t.Fatal("worktreeHasStash() error = nil, want error")
+	}
+}
+
+func TestStashMatchesWorktree(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		stash  string
+		branch string
+		head   string
+		want   bool
+	}{
+		{name: "wip branch match", stash: "WIP on feature: abc1234 seed", branch: "feature", head: "abc1234", want: true},
+		{name: "custom branch match", stash: "On feature: keep my work", branch: "feature", head: "abc1234", want: true},
+		{name: "detached head match", stash: "WIP on (no branch): abc1234 seed", branch: "", head: "abc1234", want: true},
+		{name: "other branch", stash: "WIP on other: abc1234 seed", branch: "feature", head: "abc1234", want: true},
+		{name: "other head", stash: "WIP on feature: def5678 seed", branch: "feature", head: "abc1234", want: true},
+		{name: "empty stash", stash: "   ", branch: "feature", head: "abc1234", want: false},
+		{name: "no branch no head", stash: "WIP on detached: def5678 seed", branch: "", head: "", want: false},
+		{name: "different branch and head", stash: "WIP on other: def5678 seed", branch: "feature", head: "abc1234", want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stashMatchesWorktree(tc.stash, tc.branch, tc.head)
+			if got != tc.want {
+				t.Fatalf("stashMatchesWorktree(%q, %q, %q) = %v, want %v", tc.stash, tc.branch, tc.head, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestGithubPRMergedOutcomes(t *testing.T) {
 	entry := repoEntry{Kind: "pr", Name: "12", Path: t.TempDir()}
 
@@ -5052,6 +5250,50 @@ func TestEntryMergedUsesGithubPRState(t *testing.T) {
 	}
 }
 
+func TestEntryMergedFallsBackToGitMergeCheck(t *testing.T) {
+	container := t.TempDir()
+	_, mainPath := seedBareRepoAt(t, container)
+
+	merged, err := entryMerged(repoEntry{Kind: "worktree", Name: "main", Path: mainPath}, "main")
+	if err != nil {
+		t.Fatalf("entryMerged() error = %v", err)
+	}
+	if !merged {
+		t.Fatal("entryMerged() = false, want true")
+	}
+}
+
+func TestEntryMergedWrapsGitMergeCheckError(t *testing.T) {
+	_, err := entryMerged(repoEntry{Kind: "worktree", Name: "broken", Path: t.TempDir()}, "missing-base")
+	if err == nil {
+		t.Fatal("entryMerged() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "check whether worktree broken is merged into missing-base") {
+		t.Fatalf("error = %q, want wrapped merge-check error", err.Error())
+	}
+}
+
+func TestHeadMergedIntoReturnsFalseForUnmergedHead(t *testing.T) {
+	container := t.TempDir()
+	gitDir, _ := seedBareRepoAt(t, container)
+	worktreePath := filepath.Join(container, "worktrees", "feature")
+
+	runGit(t, "", "--git-dir", gitDir, "worktree", "add", "-b", "feature", worktreePath, "main")
+	if err := os.WriteFile(filepath.Join(worktreePath, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	runGit(t, worktreePath, "add", "feature.txt")
+	runGit(t, worktreePath, "commit", "-m", "feature")
+
+	merged, err := headMergedInto(worktreePath, "main")
+	if err != nil {
+		t.Fatalf("headMergedInto() error = %v", err)
+	}
+	if merged {
+		t.Fatal("headMergedInto() = true, want false")
+	}
+}
+
 func TestRemoveWorktreeKeepsMissingBranch(t *testing.T) {
 	container := t.TempDir()
 	gitDir, _ := seedBareRepoAt(t, container)
@@ -5066,6 +5308,23 @@ func TestRemoveWorktreeKeepsMissingBranch(t *testing.T) {
 	}
 	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
 		t.Fatalf("detached worktree still exists: %v", err)
+	}
+}
+
+func TestRemoveWorktreePRSkipsBranchDeletion(t *testing.T) {
+	container := t.TempDir()
+	gitDir, _ := seedBareRepoAt(t, container)
+	worktreePath := filepath.Join(container, "PR", "7")
+	store := RepoStore{ContainerPath: container, GitDir: gitDir, MainPath: filepath.Join(container, "main"), Managed: true}
+
+	runGit(t, "", "--git-dir", gitDir, "worktree", "add", "--detach", worktreePath, "main")
+
+	err := removeWorktree(store, repoEntry{Kind: "pr", Name: "7", Path: worktreePath})
+	if err != nil {
+		t.Fatalf("removeWorktree() error = %v", err)
+	}
+	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
+		t.Fatalf("PR worktree still exists: %v", err)
 	}
 }
 
