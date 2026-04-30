@@ -100,6 +100,7 @@ gg f/credim
 gg f credim
 gg credimi newworktree
 gg credimi 99
+gg new puria/example
 gg list credimi
 gg status credimi
 gg prune credimi
@@ -107,7 +108,7 @@ gg prune credimi
 
 The binary prints the local checkout path and clones the repo first if it does not exist yet.
 
-`list`, `status`, and `prune` are reserved command names. If you ever need an owner or repo alias with one of those names, use `gg path ...` as the escape hatch.
+`new`, `list`, `status`, and `prune` are reserved command names. If you ever need an owner or repo alias with one of those names, use `gg path ...` as the escape hatch.
 
 ## Worktrees And PRs
 
@@ -163,7 +164,7 @@ Or inline:
 ```fish
 function gg --description 'manage git repos'
     switch "$argv[1]"
-    case help -h --help version --version shell-init config-path init-config path alias list ls status prune rm
+    case help -h --help version --version shell-init config-path init-config path alias new list ls status prune rm
         command gg $argv
         return $status
     end
