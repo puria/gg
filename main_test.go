@@ -1143,6 +1143,9 @@ func TestNewCommandCreatesRepositoryFromMarkdownTemplates(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(templateRoot, "ignore.txt"), []byte("ignore\n"), 0o644); err != nil {
 				t.Fatalf("WriteFile() error = %v", err)
 			}
+			if err := os.WriteFile(filepath.Join(templateRoot, ".gitignore"), []byte("*.log\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
 		}
 
 		cmdArgs := []string{"-test.run=TestHelperProcess", "--", name}
@@ -1171,6 +1174,9 @@ func TestNewCommandCreatesRepositoryFromMarkdownTemplates(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(repoPath, "ignore.txt")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("ignore.txt exists or unexpected stat error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repoPath, ".gitignore")); err != nil {
+		t.Fatalf(".gitignore missing: %v", err)
 	}
 
 	logData, err := os.ReadFile(logPath)

@@ -89,7 +89,7 @@ func copyMarkdownFiles(srcRoot, dstRoot string) error {
 			}
 			return nil
 		}
-		if !strings.EqualFold(filepath.Ext(entry.Name()), ".md") {
+		if !strings.EqualFold(filepath.Ext(entry.Name()), ".md") && entry.Name() != ".gitignore" {
 			return nil
 		}
 
