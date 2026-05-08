@@ -429,6 +429,10 @@ func ensureWorktree(store RepoStore, worktreeName string) (string, error) {
 		return path, nil
 	}
 
+	if err := pruneStaleWorktreeRegistrations(store); err != nil {
+		return "", err
+	}
+
 	if err := osMkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", fmt.Errorf("create worktree parent directory: %w", err)
 	}
@@ -500,6 +504,10 @@ func ensurePRWorktree(store RepoStore, prNumber int) (string, error) {
 		return path, nil
 	}
 
+	if err := pruneStaleWorktreeRegistrations(store); err != nil {
+		return "", err
+	}
+
 	if err := osMkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", fmt.Errorf("create PR parent directory: %w", err)
 	}
@@ -530,6 +538,18 @@ func ensurePRWorktree(store RepoStore, prNumber int) (string, error) {
 	}
 
 	return path, nil
+}
+
+func pruneStaleWorktreeRegistrations(store RepoStore) error {
+	if !gitDirInitialized(store.GitDir) {
+		return nil
+	}
+
+	if err := runCommand("", "git", "--git-dir", store.GitDir, "worktree", "prune", "--expire=now"); err != nil {
+		return fmt.Errorf("prune stale worktree registrations for %s: %w", store.ContainerPath, err)
+	}
+
+	return nil
 }
 
 func expandAlias(aliases map[string]string, key string, allowSlash bool) (string, error) {

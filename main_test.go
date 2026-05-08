@@ -2499,6 +2499,30 @@ func TestEnsureWorktreeReturnsExistingPath(t *testing.T) {
 	}
 }
 
+func TestEnsureWorktreeRecreatesMissingRegisteredWorktree(t *testing.T) {
+	gitDir, container := seedBareRepo(t)
+	store := RepoStore{ContainerPath: container, GitDir: gitDir, MainPath: filepath.Join(container, "main"), Managed: true}
+
+	first, err := ensureWorktree(store, "feature")
+	if err != nil {
+		t.Fatalf("ensureWorktree() first error = %v", err)
+	}
+	if err := os.RemoveAll(first); err != nil {
+		t.Fatalf("RemoveAll() error = %v", err)
+	}
+
+	second, err := ensureWorktree(store, "feature")
+	if err != nil {
+		t.Fatalf("ensureWorktree() second error = %v", err)
+	}
+	if second != first {
+		t.Fatalf("second path = %q, want %q", second, first)
+	}
+	if _, err := os.Stat(second); err != nil {
+		t.Fatalf("recreated worktree missing: %v", err)
+	}
+}
+
 func TestEnsureWorktreeRejectsInvalidBranch(t *testing.T) {
 	gitDir, container := seedBareRepo(t)
 	store := RepoStore{ContainerPath: container, GitDir: gitDir, MainPath: filepath.Join(container, "main"), Managed: true}
@@ -2696,6 +2720,32 @@ func TestEnsurePRWorktreeReturnsExistingPath(t *testing.T) {
 	}
 	if got != prPath {
 		t.Fatalf("ensurePRWorktree() = %q, want %q", got, prPath)
+	}
+}
+
+func TestEnsurePRWorktreeRecreatesMissingRegisteredWorktree(t *testing.T) {
+	gitDir, container := seedBareRepo(t)
+	store := RepoStore{ContainerPath: container, GitDir: gitDir, MainPath: filepath.Join(container, "main"), Managed: true}
+
+	defer stubExecCommandExcept(t, "git")()
+
+	first, err := ensurePRWorktree(store, 7)
+	if err != nil {
+		t.Fatalf("ensurePRWorktree() first error = %v", err)
+	}
+	if err := os.RemoveAll(first); err != nil {
+		t.Fatalf("RemoveAll() error = %v", err)
+	}
+
+	second, err := ensurePRWorktree(store, 7)
+	if err != nil {
+		t.Fatalf("ensurePRWorktree() second error = %v", err)
+	}
+	if second != first {
+		t.Fatalf("second path = %q, want %q", second, first)
+	}
+	if _, err := os.Stat(second); err != nil {
+		t.Fatalf("recreated PR worktree missing: %v", err)
 	}
 }
 
