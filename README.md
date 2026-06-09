@@ -100,6 +100,8 @@ gg f/credim
 gg f credim
 gg credimi newworktree
 gg credimi 99
+gg md init puria/example
+gg md up
 gg new puria/example
 gg list credimi
 gg status credimi
@@ -108,7 +110,13 @@ gg prune credimi
 
 The binary prints the local checkout path and clones the repo first if it does not exist yet.
 
-`new`, `list`, `status`, and `prune` are reserved command names. If you ever need an owner or repo alias with one of those names, use `gg path ...` as the escape hatch.
+`md`, `new`, `list`, `status`, and `prune` are reserved command names. If you ever need an owner or repo alias with one of those names, use `gg path ...` as the escape hatch.
+
+## Markdown Metadata
+
+`gg md init <owner/repo>` creates a new local repository and seeds it with markdown metadata files from `puria/md`.
+
+`gg md up` runs inside an existing Git repository and adds or updates those same metadata files in place.
 
 ## Worktrees And PRs
 
@@ -167,7 +175,7 @@ function gg --description 'manage git repos'
     case help -h --help version --version shell-init config-path init-config path alias list ls status prune rm
         command gg $argv
         return $status
-    case new
+    case new md
         set -l dir (command gg $argv)
         or return $status
 
