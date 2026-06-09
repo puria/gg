@@ -93,6 +93,7 @@ Reserved top-level command names currently include:
 - `path`
 - `config-path`
 - `alias`
+- `md`
 - `new`
 - `init-config`
 - `shell-init`

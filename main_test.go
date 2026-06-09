@@ -507,6 +507,9 @@ func TestShellInitHandlesReservedCommands(t *testing.T) {
 	if !strings.Contains(fishScript, "case new") || !strings.Contains(fishScript, "set -l dir ($gg_bin $argv)") {
 		t.Fatalf("fish shell script missing new cd handling: %q", fishScript)
 	}
+	if !strings.Contains(fishScript, "case new md") {
+		t.Fatalf("fish shell script missing md cd handling: %q", fishScript)
+	}
 
 	bashScript, err := shellInit("bash")
 	if err != nil {
@@ -518,8 +521,11 @@ func TestShellInitHandlesReservedCommands(t *testing.T) {
 	if strings.Contains(bashScript, "|alias|new|list|") {
 		t.Fatalf("bash shell script still passes new through without cd: %q", bashScript)
 	}
-	if !strings.Contains(bashScript, "new)") || !strings.Contains(bashScript, `new_dir="$("$gg_bin" "$@")"`) {
+	if !strings.Contains(bashScript, "new|md)") || !strings.Contains(bashScript, `new_dir="$("$gg_bin" "$@")"`) {
 		t.Fatalf("bash shell script missing new cd handling: %q", bashScript)
+	}
+	if !strings.Contains(bashScript, "new|md)") {
+		t.Fatalf("bash shell script missing md cd handling: %q", bashScript)
 	}
 }
 
@@ -1078,7 +1084,7 @@ func TestRunHelpVariants(t *testing.T) {
 			if err != nil {
 				t.Fatalf("run(%q) error = %v", arg, err)
 			}
-			for _, want := range []string{"alias", "new", "list", "status", "prune", "shell-init"} {
+			for _, want := range []string{"alias", "md", "new", "list", "status", "prune", "shell-init"} {
 				if !strings.Contains(output, want) {
 					t.Fatalf("run(%q) usage missing %q in:\n%s", arg, want, output)
 				}
@@ -1210,6 +1216,185 @@ func TestRunNewCommand(t *testing.T) {
 	repoPath := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
 	if strings.TrimSpace(output) != repoPath {
 		t.Fatalf("output = %q, want %q", strings.TrimSpace(output), repoPath)
+	}
+}
+
+func TestMDUpCommandUpdatesCurrentRepositoryFromMarkdownTemplates(t *testing.T) {
+	repoPath := t.TempDir()
+	subdir := filepath.Join(repoPath, "cmd", "tool")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	t.Chdir(subdir)
+
+	if err := os.WriteFile(filepath.Join(repoPath, "README.md"), []byte("# Old\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, "local.txt"), []byte("keep\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	t.Setenv("GG_TEST_COMMAND_LOG", logPath)
+	t.Setenv("GG_TEST_COMMAND_STDOUT", repoPath+"\n")
+
+	oldExec := execCommand
+	defer func() { execCommand = oldExec }()
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		if name == "git" && len(args) == 5 && args[0] == "clone" && args[4] != "" {
+			templateRoot := args[4]
+			if err := os.MkdirAll(filepath.Join(templateRoot, "nested"), 0o755); err != nil {
+				t.Fatalf("MkdirAll() error = %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(templateRoot, "README.md"), []byte("# Template\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(templateRoot, "nested", "NOTES.md"), []byte("notes\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(templateRoot, "ignore.txt"), []byte("ignore\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+		}
+
+		cmdArgs := []string{"-test.run=TestHelperProcess", "--", name}
+		cmdArgs = append(cmdArgs, args...)
+		cmd := exec.Command(os.Args[0], cmdArgs...)
+		cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+		return cmd
+	}
+
+	output, err := captureStdout(t, func() error {
+		return mdUpCommand(nil)
+	})
+	if err != nil {
+		t.Fatalf("mdUpCommand() error = %v", err)
+	}
+	if strings.TrimSpace(output) != repoPath {
+		t.Fatalf("output = %q, want %q", strings.TrimSpace(output), repoPath)
+	}
+
+	readme, err := os.ReadFile(filepath.Join(repoPath, "README.md"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(readme) != "# Template\n" {
+		t.Fatalf("README.md = %q, want template content", string(readme))
+	}
+	if _, err := os.Stat(filepath.Join(repoPath, "nested", "NOTES.md")); err != nil {
+		t.Fatalf("nested NOTES.md missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repoPath, "local.txt")); err != nil {
+		t.Fatalf("local.txt missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repoPath, "ignore.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ignore.txt exists or unexpected stat error: %v", err)
+	}
+
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	log := string(logData)
+	for _, want := range []string{
+		"git\trev-parse\t--show-toplevel",
+		"git\tclone\t--depth\t1\thttps://github.com/puria/md.git",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("command log missing %q in:\n%s", want, log)
+		}
+	}
+}
+
+func TestRunMDUpCommand(t *testing.T) {
+	repoPath := t.TempDir()
+	t.Chdir(repoPath)
+	defer stubNewCommandGit(t, "", true)()
+
+	output, err := captureStdout(t, func() error {
+		return run([]string{"md", "up"})
+	})
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if strings.TrimSpace(output) != repoPath {
+		t.Fatalf("output = %q, want %q", strings.TrimSpace(output), repoPath)
+	}
+}
+
+func TestRunMDInitCommand(t *testing.T) {
+	cfg := setupTestConfig(t)
+	defer stubNewCommandGit(t, "", true)()
+
+	output, err := captureStdout(t, func() error {
+		return run([]string{"md", "init", "owner/repo"})
+	})
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	repoPath := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
+	if strings.TrimSpace(output) != repoPath {
+		t.Fatalf("output = %q, want %q", strings.TrimSpace(output), repoPath)
+	}
+}
+
+func TestMDCommandRejectsInvalidArgs(t *testing.T) {
+	for _, args := range [][]string{
+		nil,
+		{"init"},
+		{"up", "extra"},
+		{"nope"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			err := mdCommand(args)
+			if err == nil {
+				t.Fatal("mdCommand() error = nil, want error")
+			}
+			if !strings.Contains(err.Error(), "usage: gg md") {
+				t.Fatalf("error = %q, want md usage", err.Error())
+			}
+		})
+	}
+}
+
+func TestMDUpCommandRejectsInvalidArgs(t *testing.T) {
+	err := mdUpCommand([]string{"owner/repo"})
+	if err == nil {
+		t.Fatal("mdUpCommand() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "usage: gg md up") {
+		t.Fatalf("error = %q, want usage", err.Error())
+	}
+}
+
+func TestMDUpCommandPropagatesGetwdFailure(t *testing.T) {
+	oldGetwd := osGetwd
+	defer func() { osGetwd = oldGetwd }()
+	osGetwd = func() (string, error) {
+		return "", errors.New("boom")
+	}
+
+	err := mdUpCommand(nil)
+	if err == nil {
+		t.Fatal("mdUpCommand() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "resolve current directory") {
+		t.Fatalf("error = %q, want resolve current directory", err.Error())
+	}
+}
+
+func TestMDUpCommandRejectsNonRepository(t *testing.T) {
+	repoPath := t.TempDir()
+	t.Chdir(repoPath)
+	defer stubNewCommandGit(t, "rev-parse", true)()
+
+	err := mdUpCommand(nil)
+	if err == nil {
+		t.Fatal("mdUpCommand() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "current directory is not a git repository") {
+		t.Fatalf("error = %q, want current directory git repository error", err.Error())
 	}
 }
 

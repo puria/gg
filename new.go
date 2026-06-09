@@ -19,6 +19,8 @@ var osMkdirTemp = os.MkdirTemp //nolint:gochecknoglobals
 
 var osRemoveAll = os.RemoveAll //nolint:gochecknoglobals
 
+var osGetwd = os.Getwd //nolint:gochecknoglobals
+
 func newCommand(args []string) error {
 	if len(args) != 1 {
 		return errors.New("usage: gg new <owner/repo>")
@@ -47,19 +49,7 @@ func newCommand(args []string) error {
 		return fmt.Errorf("create repository directory %s: %w", repoPath, err)
 	}
 
-	templatePath, err := osMkdirTemp("", "gg-md-*")
-	if err != nil {
-		return fmt.Errorf("create template download directory: %w", err)
-	}
-	defer func() {
-		_ = osRemoveAll(templatePath)
-	}()
-
-	if err := runCommand("", "git", "clone", "--depth", "1", newTemplateRepoURL, templatePath); err != nil {
-		return fmt.Errorf("download markdown templates: %w", err)
-	}
-
-	if err := copyMarkdownFiles(templatePath, repoPath); err != nil {
+	if err := copyMarkdownTemplates(repoPath); err != nil {
 		return err
 	}
 
@@ -75,6 +65,66 @@ func newCommand(args []string) error {
 
 	fmt.Println(repoPath)
 	return nil
+}
+
+func mdCommand(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: gg md init <owner/repo> | gg md up")
+	}
+
+	switch args[0] {
+	case "init":
+		if len(args) != 2 {
+			return errors.New("usage: gg md init <owner/repo>")
+		}
+		return newCommand(args[1:])
+	case "up":
+		return mdUpCommand(args[1:])
+	default:
+		return errors.New("usage: gg md init <owner/repo> | gg md up")
+	}
+}
+
+func mdUpCommand(args []string) error {
+	if len(args) != 0 {
+		return errors.New("usage: gg md up")
+	}
+
+	repoPath, err := osGetwd()
+	if err != nil {
+		return fmt.Errorf("resolve current directory: %w", err)
+	}
+
+	topLevel, err := captureCommand(repoPath, "git", "rev-parse", "--show-toplevel")
+	if err != nil {
+		return fmt.Errorf("current directory is not a git repository: %w", err)
+	}
+	if topLevel != "" {
+		repoPath = topLevel
+	}
+
+	if err := copyMarkdownTemplates(repoPath); err != nil {
+		return err
+	}
+
+	fmt.Println(repoPath)
+	return nil
+}
+
+func copyMarkdownTemplates(dstRoot string) error {
+	templatePath, err := osMkdirTemp("", "gg-md-*")
+	if err != nil {
+		return fmt.Errorf("create template download directory: %w", err)
+	}
+	defer func() {
+		_ = osRemoveAll(templatePath)
+	}()
+
+	if err := runCommand("", "git", "clone", "--depth", "1", newTemplateRepoURL, templatePath); err != nil {
+		return fmt.Errorf("download markdown templates: %w", err)
+	}
+
+	return copyMarkdownFiles(templatePath, dstRoot)
 }
 
 func copyMarkdownFiles(srcRoot, dstRoot string) error {

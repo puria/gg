@@ -40,7 +40,7 @@ const fishInitTemplate = `function gg --description 'manage git repos'
     case help -h --help version --version shell-init config-path init-config path alias list ls status prune rm
         $gg_bin $argv
         return $status
-    case new
+    case new md
         set -l dir ($gg_bin $argv)
         or return $status
 
@@ -63,7 +63,7 @@ const posixInitTemplate = `gg() {
       "$gg_bin" "$@"
       return $?
       ;;
-    new)
+    new|md)
       local new_dir
       new_dir="$("$gg_bin" "$@")" || return $?
       cd "$new_dir" || return $?

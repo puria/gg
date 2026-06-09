@@ -37,6 +37,8 @@ func run(args []string) error {
 		return nil
 	case args[0] == "alias":
 		return aliasCommand(args[1:])
+	case args[0] == "md":
+		return mdCommand(args[1:])
 	case args[0] == "new":
 		return newCommand(args[1:])
 	case args[0] == "list" || args[0] == "ls":
@@ -98,6 +100,8 @@ Usage:
   gg path <owner/repo>
   gg path <owner> <repo>
   gg alias <target> <name>
+  gg md init <owner/repo>
+  gg md up
   gg new <owner/repo>
   gg list <owner/repo>
   gg list <owner> <repo>
@@ -120,6 +124,7 @@ Behavior:
   - expands aliases from config
   - can persist aliases with 'gg alias <target> <name>'
   - can create a new local repository with markdown templates from puria/md
+  - can add or update markdown metadata files from puria/md in the current repo
   - clones missing repositories into a bare repo container
   - can open an owner directory at <root>/<host>/<owner>
   - uses <repo>/main as the default checkout path
