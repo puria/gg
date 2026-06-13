@@ -1140,6 +1140,9 @@ func TestNewCommandCreatesRepositoryFromMarkdownTemplates(t *testing.T) {
 			if err := os.MkdirAll(filepath.Join(templateRoot, "nested"), 0o755); err != nil {
 				t.Fatalf("MkdirAll() error = %v", err)
 			}
+			if err := os.MkdirAll(filepath.Join(templateRoot, ".puria", "scripts"), 0o755); err != nil {
+				t.Fatalf("MkdirAll() error = %v", err)
+			}
 			if err := os.WriteFile(filepath.Join(templateRoot, "README.md"), []byte("# Template\n"), 0o644); err != nil {
 				t.Fatalf("WriteFile() error = %v", err)
 			}
@@ -1147,6 +1150,15 @@ func TestNewCommandCreatesRepositoryFromMarkdownTemplates(t *testing.T) {
 				t.Fatalf("WriteFile() error = %v", err)
 			}
 			if err := os.WriteFile(filepath.Join(templateRoot, "ignore.txt"), []byte("ignore\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(templateRoot, "Taskfile.yml"), []byte("version: '3'\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(templateRoot, ".puria", "HITL.md"), []byte("# HITL\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(templateRoot, ".puria", "scripts", "repo_settings_init.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
 				t.Fatalf("WriteFile() error = %v", err)
 			}
 			if err := os.WriteFile(filepath.Join(templateRoot, ".gitignore"), []byte("*.log\n"), 0o644); err != nil {
@@ -1178,8 +1190,21 @@ func TestNewCommandCreatesRepositoryFromMarkdownTemplates(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(repoPath, "nested", "NOTES.md")); err != nil {
 		t.Fatalf("nested NOTES.md missing: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(repoPath, "ignore.txt")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("ignore.txt exists or unexpected stat error: %v", err)
+	if _, err := os.Stat(filepath.Join(repoPath, "ignore.txt")); err != nil {
+		t.Fatalf("ignore.txt missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repoPath, "Taskfile.yml")); err != nil {
+		t.Fatalf("Taskfile.yml missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repoPath, ".puria", "HITL.md")); err != nil {
+		t.Fatalf(".puria/HITL.md missing: %v", err)
+	}
+	scriptInfo, err := os.Stat(filepath.Join(repoPath, ".puria", "scripts", "repo_settings_init.sh"))
+	if err != nil {
+		t.Fatalf(".puria script missing: %v", err)
+	}
+	if got := scriptInfo.Mode().Perm(); got != 0o755 {
+		t.Fatalf(".puria script mode = %v, want 0755", got)
 	}
 	if _, err := os.Stat(filepath.Join(repoPath, ".gitignore")); err != nil {
 		t.Fatalf(".gitignore missing: %v", err)
@@ -1246,6 +1271,9 @@ func TestMDUpCommandUpdatesCurrentRepositoryFromMarkdownTemplates(t *testing.T) 
 			if err := os.MkdirAll(filepath.Join(templateRoot, "nested"), 0o755); err != nil {
 				t.Fatalf("MkdirAll() error = %v", err)
 			}
+			if err := os.MkdirAll(filepath.Join(templateRoot, ".puria"), 0o755); err != nil {
+				t.Fatalf("MkdirAll() error = %v", err)
+			}
 			if err := os.WriteFile(filepath.Join(templateRoot, "README.md"), []byte("# Template\n"), 0o644); err != nil {
 				t.Fatalf("WriteFile() error = %v", err)
 			}
@@ -1253,6 +1281,9 @@ func TestMDUpCommandUpdatesCurrentRepositoryFromMarkdownTemplates(t *testing.T) 
 				t.Fatalf("WriteFile() error = %v", err)
 			}
 			if err := os.WriteFile(filepath.Join(templateRoot, "ignore.txt"), []byte("ignore\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(templateRoot, ".puria", "HITL.md"), []byte("# HITL\n"), 0o644); err != nil {
 				t.Fatalf("WriteFile() error = %v", err)
 			}
 		}
@@ -1287,8 +1318,11 @@ func TestMDUpCommandUpdatesCurrentRepositoryFromMarkdownTemplates(t *testing.T) 
 	if _, err := os.Stat(filepath.Join(repoPath, "local.txt")); err != nil {
 		t.Fatalf("local.txt missing: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(repoPath, "ignore.txt")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("ignore.txt exists or unexpected stat error: %v", err)
+	if _, err := os.Stat(filepath.Join(repoPath, "ignore.txt")); err != nil {
+		t.Fatalf("ignore.txt missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repoPath, ".puria", "HITL.md")); err != nil {
+		t.Fatalf(".puria/HITL.md missing: %v", err)
 	}
 
 	logData, err := os.ReadFile(logPath)
@@ -1536,7 +1570,7 @@ func TestNewCommandGitAndTemplateFailures(t *testing.T) {
 		})
 	}
 
-	t.Run("no markdown", func(t *testing.T) {
+	t.Run("no template files", func(t *testing.T) {
 		setupTestConfig(t)
 		defer stubNewCommandGit(t, "", false)()
 
@@ -1544,8 +1578,8 @@ func TestNewCommandGitAndTemplateFailures(t *testing.T) {
 		if err == nil {
 			t.Fatal("newCommand() error = nil, want error")
 		}
-		if !strings.Contains(err.Error(), "no markdown files found") {
-			t.Fatalf("error = %q, want no markdown files found", err.Error())
+		if !strings.Contains(err.Error(), "no template files found") {
+			t.Fatalf("error = %q, want no template files found", err.Error())
 		}
 	})
 }
@@ -1573,14 +1607,94 @@ func TestCopyMarkdownFilesSkipsGitDirectory(t *testing.T) {
 	if err == nil {
 		t.Fatal("copyMarkdownFiles() error = nil, want error")
 	}
-	if !strings.Contains(err.Error(), "no markdown files found") {
-		t.Fatalf("error = %q, want no markdown files found", err.Error())
+	if !strings.Contains(err.Error(), "no template files found") {
+		t.Fatalf("error = %q, want no template files found", err.Error())
+	}
+}
+
+func TestCopyMarkdownFilesCopiesAllRegularTemplateFiles(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(src, ".puria", "scripts"), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	files := map[string]struct {
+		body string
+		mode os.FileMode
+	}{
+		"README.md":                             {body: "# Template\n", mode: 0o644},
+		"Taskfile.yml":                          {body: "version: '3'\n", mode: 0o644},
+		filepath.Join(".puria", "HITL.md"):      {body: "# HITL\n", mode: 0o644},
+		filepath.Join(".puria", "scripts", "x"): {body: "#!/bin/sh\n", mode: 0o755},
+	}
+	for name, file := range files {
+		if err := os.WriteFile(filepath.Join(src, name), []byte(file.body), file.mode); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", name, err)
+		}
+	}
+
+	if err := copyMarkdownFiles(src, dst); err != nil {
+		t.Fatalf("copyMarkdownFiles() error = %v", err)
+	}
+
+	for name, file := range files {
+		data, err := os.ReadFile(filepath.Join(dst, name))
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error = %v", name, err)
+		}
+		if string(data) != file.body {
+			t.Fatalf("%s = %q, want %q", name, string(data), file.body)
+		}
+		info, err := os.Stat(filepath.Join(dst, name))
+		if err != nil {
+			t.Fatalf("Stat(%s) error = %v", name, err)
+		}
+		if got := info.Mode().Perm(); got != file.mode {
+			t.Fatalf("%s mode = %v, want %v", name, got, file.mode)
+		}
+	}
+}
+
+func TestCopyMarkdownFilesSkipsNonRegularFiles(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	if err := os.Symlink(filepath.Join(src, "missing"), filepath.Join(src, "link.md")); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("# Template\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	if err := copyMarkdownFiles(src, dst); err != nil {
+		t.Fatalf("copyMarkdownFiles() error = %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dst, "link.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("link.md exists or unexpected stat error: %v", err)
+	}
+}
+
+func TestCopyMarkdownFilesPropagatesCopyError(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("# Template\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(dst, "README.md"), 0o755); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+
+	err := copyMarkdownFiles(src, dst)
+	if err == nil {
+		t.Fatal("copyMarkdownFiles() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "create template file") {
+		t.Fatalf("error = %q, want create template file", err.Error())
 	}
 }
 
 func TestCopyFileFailures(t *testing.T) {
 	t.Run("missing source", func(t *testing.T) {
-		err := copyFile(filepath.Join(t.TempDir(), "missing.md"), filepath.Join(t.TempDir(), "README.md"))
+		err := copyFile(filepath.Join(t.TempDir(), "missing.md"), filepath.Join(t.TempDir(), "README.md"), 0o644)
 		if err == nil {
 			t.Fatal("copyFile() error = nil, want error")
 		}
@@ -1601,7 +1715,7 @@ func TestCopyFileFailures(t *testing.T) {
 			return errors.New("boom")
 		}
 
-		err := copyFile(src, filepath.Join(t.TempDir(), "nested", "README.md"))
+		err := copyFile(src, filepath.Join(t.TempDir(), "nested", "README.md"), 0o644)
 		if err == nil {
 			t.Fatal("copyFile() error = nil, want error")
 		}
@@ -1617,7 +1731,7 @@ func TestCopyFileFailures(t *testing.T) {
 		}
 		dst := t.TempDir()
 
-		err := copyFile(src, dst)
+		err := copyFile(src, dst, 0o644)
 		if err == nil {
 			t.Fatal("copyFile() error = nil, want error")
 		}
@@ -1627,7 +1741,7 @@ func TestCopyFileFailures(t *testing.T) {
 	})
 
 	t.Run("copy data", func(t *testing.T) {
-		err := copyFile(t.TempDir(), filepath.Join(t.TempDir(), "README.md"))
+		err := copyFile(t.TempDir(), filepath.Join(t.TempDir(), "README.md"), 0o644)
 		if err == nil {
 			t.Fatal("copyFile() error = nil, want error")
 		}
@@ -4280,12 +4394,10 @@ func stubNewCommandGit(t *testing.T, failArg string, withMarkdown bool) func() {
 			if err := os.MkdirAll(templateRoot, 0o755); err != nil {
 				t.Fatalf("MkdirAll() error = %v", err)
 			}
-			fileName := "README.txt"
 			if withMarkdown {
-				fileName = "README.md"
-			}
-			if err := os.WriteFile(filepath.Join(templateRoot, fileName), []byte("template\n"), 0o644); err != nil {
-				t.Fatalf("WriteFile() error = %v", err)
+				if err := os.WriteFile(filepath.Join(templateRoot, "README.md"), []byte("template\n"), 0o644); err != nil {
+					t.Fatalf("WriteFile() error = %v", err)
+				}
 			}
 		}
 
