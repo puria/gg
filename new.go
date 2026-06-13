@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 const (
@@ -139,15 +138,19 @@ func copyMarkdownFiles(srcRoot, dstRoot string) error {
 			}
 			return nil
 		}
-		if !strings.EqualFold(filepath.Ext(entry.Name()), ".md") && entry.Name() != ".gitignore" {
-			return nil
-		}
-
 		rel, err := filepath.Rel(srcRoot, path)
 		if err != nil {
 			return fmt.Errorf("resolve template path %s: %w", path, err)
 		}
-		if err := copyFile(path, filepath.Join(dstRoot, rel)); err != nil {
+		info, err := entry.Info()
+		if err != nil {
+			return fmt.Errorf("inspect template file %s: %w", path, err)
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+
+		if err := copyFile(path, filepath.Join(dstRoot, rel), info.Mode().Perm()); err != nil {
 			return err
 		}
 		copied++
@@ -157,13 +160,13 @@ func copyMarkdownFiles(srcRoot, dstRoot string) error {
 		return fmt.Errorf("copy markdown templates: %w", err)
 	}
 	if copied == 0 {
-		return fmt.Errorf("copy markdown templates: no markdown files found in %s", newTemplateRepoURL)
+		return fmt.Errorf("copy markdown templates: no template files found in %s", newTemplateRepoURL)
 	}
 
 	return nil
 }
 
-func copyFile(src, dst string) error {
+func copyFile(src, dst string, mode fs.FileMode) error {
 	input, err := os.Open(src)
 	if err != nil {
 		return fmt.Errorf("open template file %s: %w", src, err)
@@ -186,6 +189,9 @@ func copyFile(src, dst string) error {
 
 	if _, err := io.Copy(output, input); err != nil {
 		return fmt.Errorf("copy template file %s: %w", src, err)
+	}
+	if err := output.Chmod(mode); err != nil {
+		return fmt.Errorf("set template file mode %s: %w", dst, err)
 	}
 
 	return nil
