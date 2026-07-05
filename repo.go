@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"os"
@@ -70,6 +71,30 @@ func (r Repo) MainPath(cfg Config) string {
 
 func (r Repo) CloneURL(cfg Config) string {
 	return "https://" + cfg.Host + "/" + r.Owner + "/" + r.Name + ".git"
+}
+
+var promptConfirm = defaultPromptConfirm //nolint:gochecknoglobals
+
+func defaultPromptConfirm(path string) (bool, error) {
+	stat, err := os.Stdin.Stat()
+	if err != nil {
+		return true, nil
+	}
+	if (stat.Mode() & os.ModeCharDevice) == 0 {
+		return true, nil
+	}
+
+	fmt.Fprintf(os.Stderr, "Create directory %s? [Y/n] ", path)
+
+	reader := bufio.NewReader(os.Stdin)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		// EOF or other read error: non-interactive, auto-confirm.
+		return true, nil
+	}
+
+	line = strings.TrimSpace(strings.ToLower(line))
+	return line == "" || line == "y" || line == "yes", nil
 }
 
 func ensureRequest(cfg Config, request Request) (string, error) {
@@ -652,6 +677,14 @@ func ensureOwnerPath(cfg Config, owner string) (string, error) {
 	}
 	if exists {
 		return path, nil
+	}
+
+	ok, err := promptConfirm(path)
+	if err != nil {
+		return "", fmt.Errorf("read confirmation: %w", err)
+	}
+	if !ok {
+		return "", fmt.Errorf("directory creation cancelled: %s", path)
 	}
 
 	if err := osMkdirAll(path, 0o755); err != nil {
