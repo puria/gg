@@ -1,6 +1,48 @@
 [tools]
 go = "latest"
-task = "latest"
 golangci-lint = "latest"
 goreleaser = "2"
 "go:golang.org/x/vuln/cmd/govulncheck" = "latest"
+
+[env]
+BIN_DIR = "bin"
+BIN_NAME = "gg"
+COVERAGE_MIN = "95"
+
+[tasks.default]
+depends = ["build"]
+
+[tasks.build]
+description = "Compile the gg binary into ./bin"
+run = """
+mkdir -p "$BIN_DIR"
+BUILD_VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+go build -buildvcs=false -ldflags "-s -w -X main.version=$BUILD_VERSION" -o "$BIN_DIR/$BIN_NAME" .
+"""
+
+[tasks.test]
+description = "Run the Go test suite with the coverage gate"
+run = """
+go test ./... -covermode=atomic -coverprofile=coverage.out
+go tool cover -func=coverage.out | awk -v min="$COVERAGE_MIN" '/^total:/ {
+  gsub("%", "", $3)
+  printf "Total coverage: %s%% (required: %s%%)\\n", $3, min
+  if (($3 + 0) < (min + 0)) exit 1
+}'
+"""
+
+[tasks.lint]
+description = "Run gofmt check and golangci-lint"
+run = """
+unformatted="$(gofmt -l .)"
+if [ -n "$unformatted" ]; then
+  echo "Not gofmt-formatted:"
+  echo "$unformatted"
+  exit 1
+fi
+golangci-lint run ./...
+"""
+
+[tasks.vuln]
+description = "Run govulncheck for known vulnerabilities"
+run = "govulncheck ./..."

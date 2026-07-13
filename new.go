@@ -149,6 +149,9 @@ func copyMarkdownFiles(srcRoot, dstRoot string) error {
 		if !info.Mode().IsRegular() {
 			return nil
 		}
+		if isLegacyTaskfile(rel) {
+			return nil
+		}
 
 		if err := copyFile(path, filepath.Join(dstRoot, rel), info.Mode().Perm()); err != nil {
 			return err
@@ -164,6 +167,10 @@ func copyMarkdownFiles(srcRoot, dstRoot string) error {
 	}
 
 	return nil
+}
+
+func isLegacyTaskfile(path string) bool {
+	return filepath.Base(path) == "Taskfile.yml"
 }
 
 func copyFile(src, dst string, mode fs.FileMode) error {

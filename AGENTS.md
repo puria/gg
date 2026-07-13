@@ -12,12 +12,12 @@ The Go binary prints or manages paths. The shell function is what performs `cd`.
 
 ## Build And Test
 
-- Build: `go build -o bin/gg .`
-- Tests: `go test ./...`
-- Lint: `golangci-lint run ./...`
-- Task aliases: `task build`, `task test`, `task lint`
+- Build: `mise run build`
+- Tests: `mise run test`
+- Lint: `mise run lint`
+- Task aliases: `mise run build`, `mise run test`, `mise run lint`
 - Before finishing work, always run the lint step relevant to CI and do not report completion until it passes
-- Before finishing work, always run the coverage gate with `task test` and do not report completion unless total coverage is at least 95%
+- Before finishing work, always run the coverage gate with `mise run test` and do not report completion unless total coverage is at least 95%
 
 The user currently links `bin/gg` into `~/.local/bin/gg`.
 

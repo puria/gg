@@ -12,9 +12,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref_name }}
   cancel-in-progress: true
 
-env:
-  COVERAGE_MIN: "95"
-
 jobs:
   lint:
     name: 🚨 Lint
@@ -22,23 +19,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: false
+      - uses: jdx/mise-action@v4
 
-      - name: Check formatting
-        run: |
-          unformatted=$(gofmt -l .)
-          if [ -n "$unformatted" ]; then
-            echo "The following files are not gofmt-formatted:"
-            echo "$unformatted"
-            exit 1
-          fi
-
-      - uses: golangci/golangci-lint-action@v8
-        with:
-          version: latest
+      - run: mise run lint
 
   vuln:
     name: 🔒 Vulnerability check
@@ -46,14 +29,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: false
+      - uses: jdx/mise-action@v4
 
-      - uses: golang/govulncheck-action@v1
-        with:
-          go-package: ./...
+      - run: mise run vuln
 
   test:
     name: ✅ Test
@@ -61,19 +39,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: false
+      - uses: jdx/mise-action@v4
 
-      - name: Run tests with coverage gate
-        run: |
-          go test ./... -covermode=atomic -coverprofile=coverage.out
-          go tool cover -func=coverage.out | awk -v min="$COVERAGE_MIN" '/^total:/ {
-            gsub("%", "", $3)
-            printf "Total coverage: %s%% (required: %s%%)\n", $3, min
-            if (($3 + 0) < (min + 0)) exit 1
-          }'
+      - run: mise run test
 
   release:
     name: 🔖 Semantic release & publish binaries
@@ -87,10 +55,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: false
+      - uses: jdx/mise-action@v4
 
       - uses: go-semantic-release/action@v1
         with:

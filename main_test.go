@@ -1152,6 +1152,9 @@ func TestNewCommandCreatesRepositoryFromMarkdownTemplates(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(templateRoot, "ignore.txt"), []byte("ignore\n"), 0o644); err != nil {
 				t.Fatalf("WriteFile() error = %v", err)
 			}
+			if err := os.WriteFile(filepath.Join(templateRoot, "mise.toml"), []byte("[tasks.lint]\nrun = \"go test ./...\"\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
 			if err := os.WriteFile(filepath.Join(templateRoot, "Taskfile.yml"), []byte("version: '3'\n"), 0o644); err != nil {
 				t.Fatalf("WriteFile() error = %v", err)
 			}
@@ -1193,8 +1196,11 @@ func TestNewCommandCreatesRepositoryFromMarkdownTemplates(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(repoPath, "ignore.txt")); err != nil {
 		t.Fatalf("ignore.txt missing: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(repoPath, "Taskfile.yml")); err != nil {
-		t.Fatalf("Taskfile.yml missing: %v", err)
+	if _, err := os.Stat(filepath.Join(repoPath, "mise.toml")); err != nil {
+		t.Fatalf("mise.toml missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repoPath, "Taskfile.yml")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Taskfile.yml copied, err = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(repoPath, ".puria", "HITL.md")); err != nil {
 		t.Fatalf(".puria/HITL.md missing: %v", err)
@@ -1612,7 +1618,7 @@ func TestCopyMarkdownFilesSkipsGitDirectory(t *testing.T) {
 	}
 }
 
-func TestCopyMarkdownFilesCopiesAllRegularTemplateFiles(t *testing.T) {
+func TestCopyMarkdownFilesCopiesRegularTemplateFiles(t *testing.T) {
 	src := t.TempDir()
 	dst := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(src, ".puria", "scripts"), 0o755); err != nil {
@@ -1623,7 +1629,7 @@ func TestCopyMarkdownFilesCopiesAllRegularTemplateFiles(t *testing.T) {
 		mode os.FileMode
 	}{
 		"README.md":                             {body: "# Template\n", mode: 0o644},
-		"Taskfile.yml":                          {body: "version: '3'\n", mode: 0o644},
+		"mise.toml":                             {body: "[tasks.lint]\nrun = \"go test ./...\"\n", mode: 0o644},
 		filepath.Join(".puria", "HITL.md"):      {body: "# HITL\n", mode: 0o644},
 		filepath.Join(".puria", "scripts", "x"): {body: "#!/bin/sh\n", mode: 0o755},
 	}
@@ -1652,6 +1658,31 @@ func TestCopyMarkdownFilesCopiesAllRegularTemplateFiles(t *testing.T) {
 		if got := info.Mode().Perm(); got != file.mode {
 			t.Fatalf("%s mode = %v, want %v", name, got, file.mode)
 		}
+	}
+}
+
+func TestCopyMarkdownFilesSkipsLegacyTaskfile(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("# Template\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "Taskfile.yml"), []byte("version: '3'\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "mise.toml"), []byte("[tasks.lint]\nrun = \"go test ./...\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	if err := copyMarkdownFiles(src, dst); err != nil {
+		t.Fatalf("copyMarkdownFiles() error = %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dst, "Taskfile.yml")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Taskfile.yml copied, err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "mise.toml")); err != nil {
+		t.Fatalf("mise.toml missing: %v", err)
 	}
 }
 
