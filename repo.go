@@ -934,15 +934,7 @@ func classifyExistingRepoPath(store RepoStore) (string, error) {
 		return "managed", nil
 	}
 
-	entries, err := osReadDir(store.ContainerPath)
-	if err != nil {
-		return "", fmt.Errorf("read repository directory %s: %w", store.ContainerPath, err)
-	}
-	if len(entries) > 0 {
-		return "local", nil
-	}
-
-	return "empty", nil
+	return "local", nil
 }
 
 func runCommand(dir, name string, args ...string) error {
