@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -923,6 +924,47 @@ func TestParseStatusArgsTable(t *testing.T) {
 				if repoArgs[i] != tc.wantRepoArgs[i] {
 					t.Fatalf("parseStatusArgs(%v) repoArgs[%d] = %q, want %q", tc.args, i, repoArgs[i], tc.wantRepoArgs[i])
 				}
+			}
+		})
+	}
+}
+
+func TestParsePruneArgsTable(t *testing.T) {
+	cases := []struct {
+		name          string
+		args          []string
+		wantYes       bool
+		wantDryRun    bool
+		wantRepoArgs  []string
+		wantErrSubstr string
+	}{
+		{name: "no args", args: nil},
+		{name: "yes", args: []string{"--yes", "owner/repo"}, wantYes: true, wantRepoArgs: []string{"owner/repo"}},
+		{name: "short yes dry run", args: []string{"-y", "-n", "owner", "repo"}, wantYes: true, wantDryRun: true, wantRepoArgs: []string{"owner", "repo"}},
+		{name: "separator", args: []string{"--dry-run", "--", "owner/repo"}, wantDryRun: true, wantRepoArgs: []string{"owner/repo"}},
+		{name: "unknown", args: []string{"--force"}, wantErrSubstr: "unknown prune flag"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			options, repoArgs, err := parsePruneArgs(tc.args)
+			if tc.wantErrSubstr != "" {
+				if err == nil {
+					t.Fatalf("parsePruneArgs(%v) error = nil, want substring %q", tc.args, tc.wantErrSubstr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErrSubstr) {
+					t.Fatalf("parsePruneArgs(%v) error = %q, want substring %q", tc.args, err.Error(), tc.wantErrSubstr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parsePruneArgs(%v) error = %v", tc.args, err)
+			}
+			if options.Yes != tc.wantYes || options.DryRun != tc.wantDryRun {
+				t.Fatalf("parsePruneArgs(%v) options = %#v, want yes=%t dryRun=%t", tc.args, options, tc.wantYes, tc.wantDryRun)
+			}
+			if !slices.Equal(repoArgs, tc.wantRepoArgs) {
+				t.Fatalf("parsePruneArgs(%v) repoArgs = %v, want %v", tc.args, repoArgs, tc.wantRepoArgs)
 			}
 		})
 	}
@@ -2287,6 +2329,279 @@ func TestPruneCommandNothingToPrune(t *testing.T) {
 	}
 }
 
+func TestPruneCommandWithoutRepoScansCurrentHostRoot(t *testing.T) {
+	cfg := setupTestConfig(t)
+
+	first := filepath.Join(cfg.Root, cfg.Host, "owner", "one")
+	second := filepath.Join(cfg.Root, cfg.Host, "owner", "two")
+	for _, container := range []string{first, second} {
+		if err := os.MkdirAll(filepath.Join(container, ".bare"), 0o755); err != nil {
+			t.Fatalf("MkdirAll() error = %v", err)
+		}
+	}
+
+	oldGetwd := osGetwd
+	osGetwd = func() (string, error) {
+		return filepath.Join(cfg.Root, cfg.Host), nil
+	}
+	defer func() {
+		osGetwd = oldGetwd
+	}()
+
+	output, err := captureStdout(t, func() error {
+		return pruneCommand([]string{"--dry-run"})
+	})
+	if err != nil {
+		t.Fatalf("pruneCommand() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"owner/one " + first,
+		"owner/two " + second,
+		"no PR or worktree checkouts",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q in:\n%s", want, output)
+		}
+	}
+}
+
+func TestPruneCommandWithoutRepoNonTerminalRequiresYes(t *testing.T) {
+	cfg := setupTestConfig(t)
+
+	container := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
+	if err := os.MkdirAll(filepath.Join(container, ".bare"), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	oldGetwd := osGetwd
+	osGetwd = func() (string, error) {
+		return filepath.Join(cfg.Root, cfg.Host), nil
+	}
+	defer func() {
+		osGetwd = oldGetwd
+	}()
+
+	oldTerminal := stdinIsTerminal
+	stdinIsTerminal = func() bool { return false }
+	defer func() {
+		stdinIsTerminal = oldTerminal
+	}()
+
+	defer stubExecCommand(t)()
+
+	output, err := captureStdout(t, func() error {
+		return pruneCommand(nil)
+	})
+	if err != nil {
+		t.Fatalf("pruneCommand() error = %v", err)
+	}
+	if !strings.Contains(output, "rerun with --yes") {
+		t.Fatalf("output missing --yes guard:\n%s", output)
+	}
+	if _, err := os.Stat(os.Getenv("GG_TEST_COMMAND_LOG")); !os.IsNotExist(err) {
+		t.Fatalf("command log exists after no-op prune: %v", err)
+	}
+}
+
+func TestPruneCommandWithoutRepoPromptDecline(t *testing.T) {
+	cfg := setupTestConfig(t)
+
+	container := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
+	if err := os.MkdirAll(filepath.Join(container, ".bare"), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	oldGetwd := osGetwd
+	osGetwd = func() (string, error) {
+		return filepath.Join(cfg.Root, cfg.Host), nil
+	}
+	defer func() {
+		osGetwd = oldGetwd
+	}()
+
+	oldTerminal := stdinIsTerminal
+	stdinIsTerminal = func() bool { return true }
+	defer func() {
+		stdinIsTerminal = oldTerminal
+	}()
+
+	oldReader := stdinReader
+	stdinReader = bufio.NewReader(strings.NewReader("n\n"))
+	defer func() {
+		stdinReader = oldReader
+	}()
+
+	defer stubExecCommand(t)()
+
+	output, err := captureStdout(t, func() error {
+		return pruneCommand(nil)
+	})
+	if err != nil {
+		t.Fatalf("pruneCommand() error = %v", err)
+	}
+	if !strings.Contains(output, "nothing removed") {
+		t.Fatalf("output missing decline result:\n%s", output)
+	}
+	if _, err := os.Stat(os.Getenv("GG_TEST_COMMAND_LOG")); !os.IsNotExist(err) {
+		t.Fatalf("command log exists after declined prune: %v", err)
+	}
+}
+
+func TestPruneCommandWithoutRepoPromptAccepts(t *testing.T) {
+	cfg := setupTestConfig(t)
+
+	container := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
+	if err := os.MkdirAll(filepath.Join(container, ".bare"), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	oldGetwd := osGetwd
+	osGetwd = func() (string, error) {
+		return filepath.Join(cfg.Root, cfg.Host), nil
+	}
+	defer func() {
+		osGetwd = oldGetwd
+	}()
+
+	oldTerminal := stdinIsTerminal
+	stdinIsTerminal = func() bool { return true }
+	defer func() {
+		stdinIsTerminal = oldTerminal
+	}()
+
+	oldReader := stdinReader
+	stdinReader = bufio.NewReader(strings.NewReader("y\n"))
+	defer func() {
+		stdinReader = oldReader
+	}()
+
+	defer stubExecCommand(t)()
+
+	output, err := captureStdout(t, func() error {
+		return pruneCommand(nil)
+	})
+	if err != nil {
+		t.Fatalf("pruneCommand() error = %v", err)
+	}
+	if !strings.Contains(output, "nothing to prune") {
+		t.Fatalf("output missing accepted prune result:\n%s", output)
+	}
+	commands := readCommandLog(t)
+	want := "git\t--git-dir\t" + filepath.Join(container, ".bare") + "\tworktree\tprune\t--verbose"
+	if len(commands) != 1 || commands[0] != want {
+		t.Fatalf("commands = %v, want exactly [%q]", commands, want)
+	}
+}
+
+func TestDiscoverPruneStoresFromPathScopes(t *testing.T) {
+	cfg := setupTestConfig(t)
+
+	one := filepath.Join(cfg.Root, cfg.Host, "owner", "one")
+	two := filepath.Join(cfg.Root, cfg.Host, "owner", "two")
+	other := filepath.Join(cfg.Root, cfg.Host, "other", "repo")
+	for _, container := range []string{one, two, other} {
+		if err := os.MkdirAll(filepath.Join(container, ".bare"), 0o755); err != nil {
+			t.Fatalf("MkdirAll() error = %v", err)
+		}
+	}
+
+	t.Run("host root", func(t *testing.T) {
+		stores, err := discoverPruneStoresFromPath(cfg, filepath.Join(cfg.Root, cfg.Host))
+		if err != nil {
+			t.Fatalf("discoverPruneStoresFromPath() error = %v", err)
+		}
+		if len(stores) != 3 {
+			t.Fatalf("len(stores) = %d, want 3", len(stores))
+		}
+	})
+
+	t.Run("owner root", func(t *testing.T) {
+		stores, err := discoverPruneStoresFromPath(cfg, filepath.Join(cfg.Root, cfg.Host, "owner"))
+		if err != nil {
+			t.Fatalf("discoverPruneStoresFromPath() error = %v", err)
+		}
+		got := []string{stores[0].Repo.String(), stores[1].Repo.String()}
+		want := []string{"owner/one", "owner/two"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("stores = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("inside repo", func(t *testing.T) {
+		stores, err := discoverPruneStoresFromPath(cfg, filepath.Join(one, "main", "subdir"))
+		if err != nil {
+			t.Fatalf("discoverPruneStoresFromPath() error = %v", err)
+		}
+		if len(stores) != 1 || stores[0].Repo.String() != "owner/one" {
+			t.Fatalf("stores = %#v, want owner/one", stores)
+		}
+	})
+
+	t.Run("outside root", func(t *testing.T) {
+		_, err := discoverPruneStoresFromPath(cfg, t.TempDir())
+		if err == nil {
+			t.Fatal("discoverPruneStoresFromPath() error = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "current directory must be inside") {
+			t.Fatalf("error = %q, want current directory message", err.Error())
+		}
+	})
+}
+
+func TestDiscoverManagedStoresUnderErrorsWhenEmpty(t *testing.T) {
+	cfg := setupTestConfig(t)
+	ownerRoot := filepath.Join(cfg.Root, cfg.Host, "empty")
+	if err := os.MkdirAll(ownerRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	_, err := discoverManagedStoresUnder(cfg, ownerRoot)
+	if err == nil {
+		t.Fatal("discoverManagedStoresUnder() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "no managed repositories found") {
+		t.Fatalf("error = %q, want no managed repositories message", err.Error())
+	}
+}
+
+func TestDiscoverManagedStoresUnderErrorsWhenMissing(t *testing.T) {
+	cfg := setupTestConfig(t)
+
+	_, err := discoverManagedStoresUnder(cfg, filepath.Join(cfg.Root, cfg.Host, "missing"))
+	if err == nil {
+		t.Fatal("discoverManagedStoresUnder() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "source scope does not exist") {
+		t.Fatalf("error = %q, want source scope message", err.Error())
+	}
+}
+
+func TestConfirmPrune(t *testing.T) {
+	oldReader := stdinReader
+	defer func() {
+		stdinReader = oldReader
+	}()
+
+	stdinReader = bufio.NewReader(strings.NewReader("yes\n"))
+	confirmed, err := confirmPrune()
+	if err != nil {
+		t.Fatalf("confirmPrune() error = %v", err)
+	}
+	if !confirmed {
+		t.Fatal("confirmPrune() = false, want true")
+	}
+
+	stdinReader = bufio.NewReader(strings.NewReader("no\n"))
+	confirmed, err = confirmPrune()
+	if err != nil {
+		t.Fatalf("confirmPrune() no error = %v", err)
+	}
+	if confirmed {
+		t.Fatal("confirmPrune() = true, want false")
+	}
+}
+
 func TestPruneCommandRemovesEmptyChildren(t *testing.T) {
 	cfg := setupTestConfig(t)
 
@@ -2346,8 +2661,8 @@ func TestPruneCommandRemovesMergedWorktreeAndPR(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"removed merged worktree feature " + worktreePath,
-		"removed merged pr 7 " + prPath,
+		"removed clean worktree feature " + worktreePath,
+		"removed clean pr 7 " + prPath,
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output missing %q in:\n%s", want, output)
@@ -2385,11 +2700,43 @@ func TestPruneCommandKeepsUnmergedWorktree(t *testing.T) {
 		t.Fatalf("pruneCommand() error = %v", err)
 	}
 
-	if strings.Contains(output, "removed merged worktree") {
+	if strings.Contains(output, "removed clean worktree") {
 		t.Fatalf("output should not report removing unmerged worktree:\n%s", output)
 	}
 	if _, err := os.Stat(worktreePath); err != nil {
 		t.Fatalf("unmerged worktree missing: %v", err)
+	}
+}
+
+func TestPruneCommandKeepsCleanUnpushedPR(t *testing.T) {
+	cfg := setupTestConfig(t)
+
+	container := filepath.Join(cfg.Root, cfg.Host, "owner", "repo")
+	gitDir, _ := seedBareRepoAt(t, container)
+	prPath := filepath.Join(container, "PR", "7")
+
+	runGit(t, "", "--git-dir", gitDir, "worktree", "add", "--detach", prPath, "main")
+	if err := os.WriteFile(filepath.Join(prPath, "local.txt"), []byte("local\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	runGit(t, prPath, "add", "local.txt")
+	runGit(t, prPath, "commit", "-m", "local pr work")
+
+	output, err := captureStdout(t, func() error {
+		return pruneCommand([]string{"owner/repo"})
+	})
+	if err != nil {
+		t.Fatalf("pruneCommand() error = %v", err)
+	}
+
+	if !strings.Contains(output, "yellow pr       7") || !strings.Contains(output, "has local commits") {
+		t.Fatalf("output missing unpushed PR protection in:\n%s", output)
+	}
+	if strings.Contains(output, "removed clean pr 7 "+prPath) {
+		t.Fatalf("output should not report removing unpushed PR:\n%s", output)
+	}
+	if _, err := os.Stat(prPath); err != nil {
+		t.Fatalf("unpushed PR worktree missing: %v", err)
 	}
 }
 
@@ -2415,7 +2762,7 @@ func TestPruneCommandSkipsDirtyWorktree(t *testing.T) {
 	if !strings.Contains(output, "skipped dirty worktree dirty "+worktreePath) {
 		t.Fatalf("output missing dirty skip in:\n%s", output)
 	}
-	if strings.Contains(output, "removed merged worktree") {
+	if strings.Contains(output, "removed clean worktree") {
 		t.Fatalf("output should not report removing dirty worktree:\n%s", output)
 	}
 	if _, err := os.Stat(worktreePath); err != nil {
@@ -2446,7 +2793,7 @@ func TestPruneCommandSkipsStashedWorktree(t *testing.T) {
 	if !strings.Contains(output, "skipped dirty worktree stashed "+worktreePath) {
 		t.Fatalf("output missing stashed skip in:\n%s", output)
 	}
-	if strings.Contains(output, "removed merged worktree stashed "+worktreePath) {
+	if strings.Contains(output, "removed clean worktree stashed "+worktreePath) {
 		t.Fatalf("output should not report removing stashed worktree:\n%s", output)
 	}
 	if _, err := os.Stat(worktreePath); err != nil {
@@ -2471,6 +2818,61 @@ func TestPruneCommandRejectsLocalRepo(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "prune is only supported for managed repositories") {
 		t.Fatalf("error = %q, want substring", err.Error())
+	}
+}
+
+func TestApplyPrunePlanPropagatesRemoveWorktreeError(t *testing.T) {
+	container := t.TempDir()
+	store := RepoStore{ContainerPath: container, GitDir: filepath.Join(container, ".bare"), Managed: true}
+	entry := repoEntry{Kind: "pr", Name: "7", Path: filepath.Join(container, "PR", "7")}
+
+	oldExec := execCommand
+	defer func() {
+		execCommand = oldExec
+	}()
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		cmdArgs := []string{"-test.run=TestHelperProcess", "--", name}
+		cmdArgs = append(cmdArgs, args...)
+		cmd := exec.Command(os.Args[0], cmdArgs...)
+		env := append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+		if name == "git" && slices.Contains(args, "remove") {
+			env = append(env, "GG_TEST_COMMAND_EXIT=1")
+		}
+		cmd.Env = env
+		return cmd
+	}
+
+	_, _, _, err := applyPrunePlan(prunePlan{
+		Store: store,
+		Entries: []pruneEntry{{
+			repoEntry: entry,
+			Clean:     true,
+			Removable: true,
+		}},
+	})
+	if err == nil {
+		t.Fatal("applyPrunePlan() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "remove pr 7") {
+		t.Fatalf("error = %q, want remove context", err.Error())
+	}
+}
+
+func TestApplyPrunePlanPropagatesEmptyChildError(t *testing.T) {
+	container := t.TempDir()
+	store := RepoStore{ContainerPath: container, GitDir: filepath.Join(container, ".bare"), Managed: true}
+	if err := os.WriteFile(filepath.Join(container, "worktrees"), []byte("not a dir\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	defer stubExecCommand(t)()
+
+	_, _, _, err := applyPrunePlan(prunePlan{Store: store})
+	if err == nil {
+		t.Fatal("applyPrunePlan() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("error = %q, want directory error", err.Error())
 	}
 }
 
@@ -4189,22 +4591,6 @@ func TestSetupMiseToolingHandlesBothConfigs(t *testing.T) {
 	}
 }
 
-func TestClassifyExistingRepoPathEmpty(t *testing.T) {
-	container := t.TempDir()
-	store := RepoStore{
-		ContainerPath: container,
-		GitDir:        filepath.Join(container, ".bare"),
-		MainPath:      filepath.Join(container, "main"),
-	}
-	got, err := classifyExistingRepoPath(store)
-	if err != nil {
-		t.Fatalf("classifyExistingRepoPath() error = %v", err)
-	}
-	if got != "empty" {
-		t.Fatalf("classifyExistingRepoPath() = %q, want %q", got, "empty")
-	}
-}
-
 func TestClassifyExistingRepoPathLocal(t *testing.T) {
 	container := t.TempDir()
 	if err := os.WriteFile(filepath.Join(container, "README.md"), []byte("x"), 0o644); err != nil {
@@ -5302,7 +5688,7 @@ func TestPruneCommandPrintsGitOutput(t *testing.T) {
 	}
 }
 
-func TestPruneMergedEntriesFetchFailure(t *testing.T) {
+func TestBuildPrunePlanFetchFailure(t *testing.T) {
 	container := t.TempDir()
 	gitDir, _ := seedBareRepoAt(t, container)
 	worktreePath := filepath.Join(container, "worktrees", "feature")
@@ -5324,16 +5710,16 @@ func TestPruneMergedEntriesFetchFailure(t *testing.T) {
 		return exec.Command(name, args...)
 	}
 
-	_, err := pruneMergedEntries(store)
+	_, err := buildPrunePlan(store)
 	if err == nil {
-		t.Fatal("pruneMergedEntries() error = nil, want error")
+		t.Fatal("buildPrunePlan() error = nil, want error")
 	}
 	if !strings.Contains(err.Error(), "fetch remote updates before prune") {
 		t.Fatalf("error = %q, want substring %q", err.Error(), "fetch remote updates before prune")
 	}
 }
 
-func TestPruneMergedEntriesDefaultBaseRefFailure(t *testing.T) {
+func TestBuildPrunePlanDefaultBaseRefFailure(t *testing.T) {
 	container := t.TempDir()
 	gitDir := filepath.Join(container, ".bare")
 	worktreePath := filepath.Join(container, "worktrees", "feature")
@@ -5360,12 +5746,68 @@ func TestPruneMergedEntriesDefaultBaseRefFailure(t *testing.T) {
 		return cmd
 	}
 
-	_, err := pruneMergedEntries(store)
+	_, err := buildPrunePlan(store)
 	if err == nil {
-		t.Fatal("pruneMergedEntries() error = nil, want error")
+		t.Fatal("buildPrunePlan() error = nil, want error")
 	}
 	if !strings.Contains(err.Error(), "could not determine default branch") {
 		t.Fatalf("error = %q, want substring %q", err.Error(), "could not determine default branch")
+	}
+}
+
+func TestBuildPrunePlanListEntriesFailure(t *testing.T) {
+	container := filepath.Join(t.TempDir(), "repo")
+	if err := os.WriteFile(container, []byte("not a dir\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, err := buildPrunePlan(RepoStore{
+		ContainerPath: container,
+		MainPath:      filepath.Join(container, "main"),
+		Managed:       true,
+	})
+	if err == nil {
+		t.Fatal("buildPrunePlan() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("error = %q, want directory error", err.Error())
+	}
+}
+
+func TestBuildPrunePlanStatusFailure(t *testing.T) {
+	container := t.TempDir()
+	gitDir, _ := seedBareRepoAt(t, container)
+	worktreePath := filepath.Join(container, "worktrees", "feature")
+	store := RepoStore{ContainerPath: container, GitDir: gitDir, MainPath: filepath.Join(container, "main"), Managed: true}
+
+	if err := os.MkdirAll(worktreePath, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(worktreePath, ".git"), []byte("gitdir: test\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	oldExec := execCommand
+	defer func() {
+		execCommand = oldExec
+	}()
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		if name == "git" && slices.Equal(args, []string{"status", "--porcelain"}) {
+			cmdArgs := []string{"-test.run=TestHelperProcess", "--", name}
+			cmdArgs = append(cmdArgs, args...)
+			cmd := exec.Command(os.Args[0], cmdArgs...)
+			cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1", "GG_TEST_COMMAND_EXIT=1")
+			return cmd
+		}
+		return exec.Command(name, args...)
+	}
+
+	_, err := buildPrunePlan(store)
+	if err == nil {
+		t.Fatal("buildPrunePlan() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "check worktree feature status") {
+		t.Fatalf("error = %q, want status context", err.Error())
 	}
 }
 
@@ -5409,6 +5851,220 @@ func TestWorktreeCleanReturnsFalseForDirtyRepo(t *testing.T) {
 	}
 	if clean {
 		t.Fatal("worktreeClean() clean = true, want false")
+	}
+}
+
+func TestWorktreeHeadSyncedUsesUpstreamAheadCount(t *testing.T) {
+	oldExec := execCommand
+	defer func() {
+		execCommand = oldExec
+	}()
+
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		stdout := ""
+		if name == "git" && slices.Equal(args, []string{"rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"}) {
+			stdout = "origin/feature\n"
+		}
+		if name == "git" && slices.Equal(args, []string{"rev-list", "--count", "@{upstream}..HEAD"}) {
+			stdout = "0\n"
+		}
+		cmdArgs := []string{"-test.run=TestHelperProcess", "--", name}
+		cmdArgs = append(cmdArgs, args...)
+		cmd := exec.Command(os.Args[0], cmdArgs...)
+		cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1", "GG_TEST_COMMAND_STDOUT="+stdout)
+		return cmd
+	}
+
+	synced, err := worktreeHeadSynced(t.TempDir())
+	if err != nil {
+		t.Fatalf("worktreeHeadSynced() error = %v", err)
+	}
+	if !synced {
+		t.Fatal("worktreeHeadSynced() = false, want true")
+	}
+}
+
+func TestWorktreeHeadSyncedFallsBackToRemoteContains(t *testing.T) {
+	oldExec := execCommand
+	defer func() {
+		execCommand = oldExec
+	}()
+
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		stdout := ""
+		exit := name == "git" && slices.Equal(args, []string{"rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"})
+		if name == "git" && slices.Equal(args, []string{"for-each-ref", "--format=%(refname)", "--contains", "HEAD", "refs/remotes"}) {
+			stdout = "refs/remotes/origin/feature\n"
+		}
+		cmdArgs := []string{"-test.run=TestHelperProcess", "--", name}
+		cmdArgs = append(cmdArgs, args...)
+		cmd := exec.Command(os.Args[0], cmdArgs...)
+		env := append(os.Environ(), "GO_WANT_HELPER_PROCESS=1", "GG_TEST_COMMAND_STDOUT="+stdout)
+		if exit {
+			env = append(env, "GG_TEST_COMMAND_EXIT=1")
+		}
+		cmd.Env = env
+		return cmd
+	}
+
+	synced, err := worktreeHeadSynced(t.TempDir())
+	if err != nil {
+		t.Fatalf("worktreeHeadSynced() error = %v", err)
+	}
+	if !synced {
+		t.Fatal("worktreeHeadSynced() = false, want true")
+	}
+}
+
+func TestWorktreeHeadSyncedRejectsAheadOfUpstream(t *testing.T) {
+	oldExec := execCommand
+	defer func() {
+		execCommand = oldExec
+	}()
+
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		stdout := ""
+		if name == "git" && slices.Equal(args, []string{"rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"}) {
+			stdout = "origin/feature\n"
+		}
+		if name == "git" && slices.Equal(args, []string{"rev-list", "--count", "@{upstream}..HEAD"}) {
+			stdout = "2\n"
+		}
+		cmdArgs := []string{"-test.run=TestHelperProcess", "--", name}
+		cmdArgs = append(cmdArgs, args...)
+		cmd := exec.Command(os.Args[0], cmdArgs...)
+		cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1", "GG_TEST_COMMAND_STDOUT="+stdout)
+		return cmd
+	}
+
+	synced, err := worktreeHeadSynced(t.TempDir())
+	if err != nil {
+		t.Fatalf("worktreeHeadSynced() error = %v", err)
+	}
+	if synced {
+		t.Fatal("worktreeHeadSynced() = true, want false")
+	}
+}
+
+func TestWorktreeHeadSyncedPropagatesRevListError(t *testing.T) {
+	oldExec := execCommand
+	defer func() {
+		execCommand = oldExec
+	}()
+
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		stdout := ""
+		exit := false
+		if name == "git" && slices.Equal(args, []string{"rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"}) {
+			stdout = "origin/feature\n"
+		}
+		if name == "git" && slices.Equal(args, []string{"rev-list", "--count", "@{upstream}..HEAD"}) {
+			exit = true
+		}
+		cmdArgs := []string{"-test.run=TestHelperProcess", "--", name}
+		cmdArgs = append(cmdArgs, args...)
+		cmd := exec.Command(os.Args[0], cmdArgs...)
+		env := append(os.Environ(), "GO_WANT_HELPER_PROCESS=1", "GG_TEST_COMMAND_STDOUT="+stdout)
+		if exit {
+			env = append(env, "GG_TEST_COMMAND_EXIT=1")
+		}
+		cmd.Env = env
+		return cmd
+	}
+
+	_, err := worktreeHeadSynced(t.TempDir())
+	if err == nil {
+		t.Fatal("worktreeHeadSynced() error = nil, want error")
+	}
+}
+
+func TestWorktreeHeadSyncedRejectsBadRevListCount(t *testing.T) {
+	oldExec := execCommand
+	defer func() {
+		execCommand = oldExec
+	}()
+
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		stdout := ""
+		if name == "git" && slices.Equal(args, []string{"rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"}) {
+			stdout = "origin/feature\n"
+		}
+		if name == "git" && slices.Equal(args, []string{"rev-list", "--count", "@{upstream}..HEAD"}) {
+			stdout = "not-a-number\n"
+		}
+		cmdArgs := []string{"-test.run=TestHelperProcess", "--", name}
+		cmdArgs = append(cmdArgs, args...)
+		cmd := exec.Command(os.Args[0], cmdArgs...)
+		cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1", "GG_TEST_COMMAND_STDOUT="+stdout)
+		return cmd
+	}
+
+	_, err := worktreeHeadSynced(t.TempDir())
+	if err == nil {
+		t.Fatal("worktreeHeadSynced() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "parse unpushed commit count") {
+		t.Fatalf("error = %q, want parse message", err.Error())
+	}
+}
+
+func TestEntryPrunablePropagatesSyncError(t *testing.T) {
+	oldExec := execCommand
+	defer func() {
+		execCommand = oldExec
+	}()
+
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		cmdArgs := []string{"-test.run=TestHelperProcess", "--", name}
+		cmdArgs = append(cmdArgs, args...)
+		cmd := exec.Command(os.Args[0], cmdArgs...)
+		env := append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+		if name == "git" && slices.Equal(args, []string{"for-each-ref", "--format=%(refname)", "--contains", "HEAD", "refs/remotes"}) {
+			env = append(env, "GG_TEST_COMMAND_EXIT=1")
+		}
+		cmd.Env = env
+		return cmd
+	}
+
+	_, _, err := entryPrunable(repoEntry{Kind: "worktree", Name: "feature", Path: t.TempDir()}, "main")
+	if err == nil {
+		t.Fatal("entryPrunable() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "unpushed commits") {
+		t.Fatalf("error = %q, want unpushed commits context", err.Error())
+	}
+}
+
+func TestEntryPrunablePropagatesMergeCheckError(t *testing.T) {
+	oldExec := execCommand
+	defer func() {
+		execCommand = oldExec
+	}()
+
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		if name == "git" && slices.Equal(args, []string{"rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"}) {
+			cmdArgs := []string{"-test.run=TestHelperProcess", "--", name}
+			cmdArgs = append(cmdArgs, args...)
+			cmd := exec.Command(os.Args[0], cmdArgs...)
+			cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1", "GG_TEST_COMMAND_EXIT=1")
+			return cmd
+		}
+		if name == "git" && slices.Equal(args, []string{"for-each-ref", "--format=%(refname)", "--contains", "HEAD", "refs/remotes"}) {
+			cmdArgs := []string{"-test.run=TestHelperProcess", "--", name}
+			cmdArgs = append(cmdArgs, args...)
+			cmd := exec.Command(os.Args[0], cmdArgs...)
+			cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+			return cmd
+		}
+		return exec.Command(name, args...)
+	}
+
+	_, _, err := entryPrunable(repoEntry{Kind: "worktree", Name: "feature", Path: t.TempDir()}, "main")
+	if err == nil {
+		t.Fatal("entryPrunable() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "check whether worktree feature is merged") {
+		t.Fatalf("error = %q, want merge check context", err.Error())
 	}
 }
 
@@ -6260,30 +6916,6 @@ func TestWriteConfigWriteFileError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "write config") {
 		t.Fatalf("error = %q, want substring %q", err.Error(), "write config")
-	}
-}
-
-func TestClassifyExistingRepoPathReadDirError(t *testing.T) {
-	container := t.TempDir()
-	store := RepoStore{
-		ContainerPath: container,
-		GitDir:        filepath.Join(container, ".bare"),
-		MainPath:      filepath.Join(container, "main"),
-		Managed:       true,
-	}
-
-	oldReadDir := osReadDir
-	defer func() { osReadDir = oldReadDir }()
-	osReadDir = func(string) ([]os.DirEntry, error) {
-		return nil, errors.New("simulated readdir failure")
-	}
-
-	_, err := classifyExistingRepoPath(store)
-	if err == nil {
-		t.Fatal("classifyExistingRepoPath() error = nil, want error")
-	}
-	if !strings.Contains(err.Error(), "read repository directory") {
-		t.Fatalf("error = %q, want substring %q", err.Error(), "read repository directory")
 	}
 }
 

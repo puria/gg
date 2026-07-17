@@ -110,6 +110,7 @@ Usage:
   gg status <owner/repo>
   gg status <owner> <repo>
   gg status --files <owner/repo>
+  gg prune [--yes] [--dry-run]
   gg prune <owner/repo>
   gg prune <owner> <repo>
   gg rm <owner/repo>
@@ -132,6 +133,8 @@ Behavior:
   - can check out PRs under <repo>/PR/<number>
   - supports ls/list, status, and rm/prune for managed repo worktrees
   - status prints branch plus clean/dirty summary; use --files for changed paths
+  - prune without repo args scans the current repo, owner, or host root scope
+  - prune removes only clean entries with no stash and no local-only commits
   - prints the target local path
 `)
 }

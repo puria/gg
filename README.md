@@ -149,13 +149,20 @@ These commands do not `cd`; they print information or perform maintenance:
 gg list credimi
 gg status credimi
 gg prune credimi
+gg prune --dry-run
+gg prune --yes
 ```
 
 Behavior:
 
 - `gg list credimi` prints `main`, `worktrees/*`, and `PR/*` entries for the managed repo
 - `gg status credimi` runs `git status --short --branch` for each known worktree
-- `gg prune credimi` removes clean `worktrees/*` and `PR/*` checkouts that are already merged into the default branch, then cleans stale Git worktree metadata and leftover empty directories
+- `gg prune credimi` removes only green `worktrees/*` and `PR/*` checkouts, then cleans stale Git worktree metadata and leftover empty directories
+- green entries are clean, have no matching stash, and have no local-only commits
+- dirty files, stashes, and committed work that is not pushed or merged are kept
+- `gg prune` without a repo argument scans the current repo, owner directory, or host root such as `~/src/github.com`
+- `gg prune --dry-run` only prints the green/yellow/red plan
+- `gg prune --yes` applies the no-argument scan without prompting
 
 ## Shell Integration
 

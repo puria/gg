@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"os"
@@ -17,6 +18,13 @@ var osRemove = os.Remove //nolint:gochecknoglobals
 
 var filepathWalkDir = filepath.WalkDir //nolint:gochecknoglobals
 
+var stdinIsTerminal = func() bool { //nolint:gochecknoglobals
+	info, err := os.Stdin.Stat()
+	return err == nil && (info.Mode()&os.ModeCharDevice) != 0
+}
+
+var stdinReader = bufio.NewReader(os.Stdin) //nolint:gochecknoglobals
+
 type repoEntry struct {
 	Kind string
 	Name string
@@ -27,9 +35,26 @@ type statusOptions struct {
 	ShowFiles bool
 }
 
+type pruneOptions struct {
+	Yes    bool
+	DryRun bool
+}
+
 type repoStatus struct {
 	Branch string
 	Files  []string
+}
+
+type prunePlan struct {
+	Store   RepoStore
+	Entries []pruneEntry
+}
+
+type pruneEntry struct {
+	repoEntry
+	Clean     bool
+	Removable bool
+	Reason    string
 }
 
 func listCommand(args []string) error {
@@ -134,69 +159,124 @@ func statusCommand(args []string) error {
 }
 
 func pruneCommand(args []string) error {
+	options, repoArgs, err := parsePruneArgs(args)
+	if err != nil {
+		return err
+	}
+
 	cfg, err := loadConfigOnly()
 	if err != nil {
 		return err
 	}
 
-	repo, err := resolveRepoArgs(cfg, args)
+	stores, err := resolvePruneStores(cfg, repoArgs)
 	if err != nil {
 		return err
 	}
 
-	store, err := findRepoStore(cfg, repo)
-	if err != nil {
-		return err
-	}
-	if !store.Managed {
-		return fmt.Errorf("prune is only supported for managed repositories; %s is an existing local directory", store.ContainerPath)
-	}
-
-	output, err := captureCombinedCommand("", "git", "--git-dir", store.GitDir, "worktree", "prune", "--verbose")
-	if err != nil {
-		return fmt.Errorf("prune worktrees for %s: %w", store.ContainerPath, err)
-	}
-
-	removedMerged, err := pruneMergedEntries(store)
-	if err != nil {
-		return err
-	}
-
-	var removed []string
-	for _, dir := range []string{
-		filepath.Join(store.ContainerPath, "worktrees"),
-		filepath.Join(store.ContainerPath, "PR"),
-	} {
-		pruned, err := removeEmptyChildren(dir)
+	plans := make([]prunePlan, 0, len(stores))
+	for _, store := range stores {
+		if !store.Managed {
+			return fmt.Errorf("prune is only supported for managed repositories; %s is an existing local directory", store.ContainerPath)
+		}
+		plan, err := buildPrunePlan(store)
 		if err != nil {
-			// untestable: passthrough — removeEmptyChildren error is wrapped at its source.
 			return err
 		}
-		removed = append(removed, pruned...)
+		plans = append(plans, plan)
 	}
 
-	output = strings.TrimSpace(output)
-	if output != "" {
-		fmt.Println(output)
+	printPrunePlans(plans)
+	if options.DryRun {
+		return nil
 	}
-	for _, entry := range removedMerged {
-		fmt.Printf("removed merged %s %s %s\n", entry.Kind, entry.Name, entry.Path)
+
+	if len(repoArgs) == 0 && !options.Yes {
+		if !stdinIsTerminal() {
+			fmt.Println("rerun with --yes to remove clean entries")
+			return nil
+		}
+		confirmed, err := confirmPrune()
+		if err != nil {
+			return err
+		}
+		if !confirmed {
+			fmt.Println("nothing removed")
+			return nil
+		}
 	}
-	for _, path := range removed {
-		fmt.Printf("removed empty directory %s\n", path)
+
+	removedAny := false
+	for _, plan := range plans {
+		removedMerged, removed, output, err := applyPrunePlan(plan)
+		if err != nil {
+			return err
+		}
+		if output != "" || len(removedMerged) > 0 || len(removed) > 0 {
+			removedAny = true
+		}
+		printPruneResults(removedMerged, removed, output)
 	}
-	if output == "" && len(removedMerged) == 0 && len(removed) == 0 {
+	if !removedAny {
 		fmt.Println("nothing to prune")
 	}
 
 	return nil
 }
 
-func pruneMergedEntries(store RepoStore) ([]repoEntry, error) {
+func applyPrunePlan(plan prunePlan) ([]repoEntry, []string, string, error) {
+	output, err := captureCombinedCommand("", "git", "--git-dir", plan.Store.GitDir, "worktree", "prune", "--verbose")
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("prune worktrees for %s: %w", plan.Store.ContainerPath, err)
+	}
+
+	var removedMerged []repoEntry
+	for _, entry := range plan.Entries {
+		if !entry.Removable {
+			if !entry.Clean {
+				fmt.Printf("skipped dirty %s %s %s\n", entry.Kind, entry.Name, entry.Path)
+			}
+			continue
+		}
+		if err := removeWorktree(plan.Store, entry.repoEntry); err != nil {
+			return nil, nil, "", err
+		}
+		removedMerged = append(removedMerged, entry.repoEntry)
+	}
+
+	var removed []string
+	for _, dir := range []string{
+		filepath.Join(plan.Store.ContainerPath, "worktrees"),
+		filepath.Join(plan.Store.ContainerPath, "PR"),
+	} {
+		pruned, err := removeEmptyChildren(dir)
+		if err != nil {
+			// untestable: passthrough — removeEmptyChildren error is wrapped at its source.
+			return nil, nil, "", err
+		}
+		removed = append(removed, pruned...)
+	}
+
+	return removedMerged, removed, strings.TrimSpace(output), nil
+}
+
+func printPruneResults(removedMerged []repoEntry, removed []string, output string) {
+	if output != "" {
+		fmt.Println(output)
+	}
+	for _, entry := range removedMerged {
+		fmt.Printf("removed clean %s %s %s\n", entry.Kind, entry.Name, entry.Path)
+	}
+	for _, path := range removed {
+		fmt.Printf("removed empty directory %s\n", path)
+	}
+}
+
+func buildPrunePlan(store RepoStore) (prunePlan, error) {
 	entries, err := listRepoEntries(store)
 	if err != nil {
 		// untestable: passthrough — listRepoEntries error is wrapped at its source.
-		return nil, err
+		return prunePlan{}, err
 	}
 
 	var candidates []repoEntry
@@ -206,46 +286,39 @@ func pruneMergedEntries(store RepoStore) ([]repoEntry, error) {
 		}
 	}
 	if len(candidates) == 0 {
-		return nil, nil
+		return prunePlan{Store: store}, nil
 	}
 
 	if hasRemote, _ := repoHasOriginRemote(store.GitDir); hasRemote {
 		if err := runCommand("", "git", "--git-dir", store.GitDir, "fetch", "--prune", "origin"); err != nil {
-			return nil, fmt.Errorf("fetch remote updates before prune: %w", err)
+			return prunePlan{}, fmt.Errorf("fetch remote updates before prune: %w", err)
 		}
 	}
 
 	baseRef, err := defaultBaseRef(store.GitDir)
 	if err != nil {
-		return nil, err
+		return prunePlan{}, err
 	}
 
-	var removed []repoEntry
+	var plan []pruneEntry
 	for _, entry := range candidates {
 		clean, err := worktreeClean(entry.Path)
 		if err != nil {
-			return nil, fmt.Errorf("check %s %s status: %w", entry.Kind, entry.Name, err)
+			return prunePlan{}, fmt.Errorf("check %s %s status: %w", entry.Kind, entry.Name, err)
 		}
 		if !clean {
-			fmt.Printf("skipped dirty %s %s %s\n", entry.Kind, entry.Name, entry.Path)
+			plan = append(plan, pruneEntry{repoEntry: entry, Clean: false, Reason: "dirty"})
 			continue
 		}
 
-		merged, err := entryMerged(entry, baseRef)
+		removable, reason, err := entryPrunable(entry, baseRef)
 		if err != nil {
-			return nil, err
+			return prunePlan{}, err
 		}
-		if !merged {
-			continue
-		}
-
-		if err := removeWorktree(store, entry); err != nil {
-			return nil, err
-		}
-		removed = append(removed, entry)
+		plan = append(plan, pruneEntry{repoEntry: entry, Clean: true, Removable: removable, Reason: reason})
 	}
 
-	return removed, nil
+	return prunePlan{Store: store, Entries: plan}, nil
 }
 
 func worktreeClean(path string) (bool, error) {
@@ -327,6 +400,52 @@ func entryMerged(entry repoEntry, baseRef string) (bool, error) {
 	return merged, nil
 }
 
+func entryPrunable(entry repoEntry, baseRef string) (bool, string, error) {
+	synced, err := worktreeHeadSynced(entry.Path)
+	if err != nil {
+		return false, "", fmt.Errorf("check %s %s unpushed commits: %w", entry.Kind, entry.Name, err)
+	}
+	if synced {
+		return true, "clean and synced", nil
+	}
+
+	merged, err := entryMerged(entry, baseRef)
+	if err != nil {
+		return false, "", err
+	}
+	if merged {
+		return true, "clean and merged", nil
+	}
+
+	return false, "has local commits", nil
+}
+
+func worktreeHeadSynced(path string) (bool, error) {
+	upstream, err := captureCommand(path, "git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+	if err == nil && strings.TrimSpace(upstream) != "" {
+		output, err := captureCommand(path, "git", "rev-list", "--count", "@{upstream}..HEAD")
+		if err != nil {
+			return false, err
+		}
+
+		count, err := strconv.Atoi(strings.TrimSpace(output))
+		if err != nil {
+			return false, fmt.Errorf("parse unpushed commit count %q: %w", output, err)
+		}
+
+		if count == 0 {
+			return true, nil
+		}
+	}
+
+	output, err := captureCommand(path, "git", "for-each-ref", "--format=%(refname)", "--contains", "HEAD", "refs/remotes")
+	if err != nil {
+		return false, err
+	}
+
+	return strings.TrimSpace(output) != "", nil
+}
+
 func githubPRMerged(entry repoEntry) (bool, bool) {
 	if _, err := execLookPath("gh"); err != nil {
 		return false, false
@@ -398,6 +517,171 @@ func resolveRepoArgs(cfg Config, args []string) (Repo, error) {
 	default:
 		return Repo{}, fmt.Errorf("usage: gg <command> <owner/repo> or gg <command> <owner> <repo>")
 	}
+}
+
+func parsePruneArgs(args []string) (pruneOptions, []string, error) {
+	var options pruneOptions
+
+	for i, arg := range args {
+		switch arg {
+		case "--yes", "-y":
+			options.Yes = true
+		case "--dry-run", "-n":
+			options.DryRun = true
+		case "--":
+			return options, args[i+1:], nil
+		default:
+			if strings.HasPrefix(arg, "-") {
+				return pruneOptions{}, nil, fmt.Errorf("unknown prune flag %q", arg)
+			}
+			return options, args[i:], nil
+		}
+	}
+
+	return options, nil, nil
+}
+
+func resolvePruneStores(cfg Config, args []string) ([]RepoStore, error) {
+	if len(args) > 0 {
+		repo, err := resolveRepoArgs(cfg, args)
+		if err != nil {
+			return nil, err
+		}
+		store, err := findRepoStore(cfg, repo)
+		if err != nil {
+			return nil, err
+		}
+		return []RepoStore{store}, nil
+	}
+
+	cwd, err := osGetwd()
+	if err != nil {
+		return nil, fmt.Errorf("resolve current directory: %w", err)
+	}
+
+	return discoverPruneStoresFromPath(cfg, cwd)
+}
+
+func discoverPruneStoresFromPath(cfg Config, path string) ([]RepoStore, error) {
+	hostRoot := filepath.Join(cfg.Root, cfg.Host)
+	rel, err := filepath.Rel(hostRoot, path)
+	if err != nil || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." || filepath.IsAbs(rel) {
+		return nil, fmt.Errorf("current directory must be inside %s or pass a repository argument", hostRoot)
+	}
+
+	if rel == "." {
+		return discoverManagedStoresUnder(cfg, hostRoot)
+	}
+
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	if len(parts) == 1 {
+		return discoverManagedStoresUnder(cfg, filepath.Join(hostRoot, parts[0]))
+	}
+
+	repo := Repo{Owner: parts[0], Name: parts[1]}
+	store, err := findRepoStore(cfg, repo)
+	if err != nil {
+		return nil, err
+	}
+	return []RepoStore{store}, nil
+}
+
+func discoverManagedStoresUnder(cfg Config, root string) ([]RepoStore, error) {
+	exists, err := directoryExists(root)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, fmt.Errorf("source scope does not exist: %s", root)
+	}
+
+	var stores []RepoStore
+	err = filepathWalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			// untestable: WalkDir only forwards OS errors already surfaced by the caller's seam.
+			return err
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if path == root {
+			return nil
+		}
+
+		if d.Name() == ".bare" {
+			container := filepath.Dir(path)
+			rel, err := filepath.Rel(filepath.Join(cfg.Root, cfg.Host), container)
+			if err != nil {
+				// untestable: container was discovered below the host root.
+				return err
+			}
+			parts := strings.Split(filepath.ToSlash(rel), "/")
+			if len(parts) == 2 {
+				stores = append(stores, RepoStore{
+					ContainerPath: container,
+					GitDir:        path,
+					MainPath:      filepath.Join(container, "main"),
+					Managed:       true,
+					Repo:          Repo{Owner: parts[0], Name: parts[1]},
+				})
+			}
+			return filepath.SkipDir
+		}
+
+		if d.Name() == "main" || d.Name() == "worktrees" || d.Name() == "PR" || strings.HasPrefix(d.Name(), ".") {
+			return filepath.SkipDir
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("scan managed repositories under %s: %w", root, err)
+	}
+
+	sort.Slice(stores, func(i, j int) bool {
+		return stores[i].Repo.String() < stores[j].Repo.String()
+	})
+	if len(stores) == 0 {
+		return nil, fmt.Errorf("no managed repositories found under %s", root)
+	}
+
+	return stores, nil
+}
+
+func printPrunePlans(plans []prunePlan) {
+	if len(plans) == 0 {
+		return
+	}
+
+	for i, plan := range plans {
+		if i > 0 {
+			fmt.Println()
+		}
+		fmt.Printf("%s %s\n", plan.Store.Repo.String(), plan.Store.ContainerPath)
+		if len(plan.Entries) == 0 {
+			fmt.Println("  no PR or worktree checkouts")
+			continue
+		}
+		for _, entry := range plan.Entries {
+			marker := "red"
+			if entry.Removable {
+				marker = "green"
+			} else if entry.Clean {
+				marker = "yellow"
+			}
+			fmt.Printf("  %-6s %-8s %-20s %s\n", marker, entry.Kind, entry.Name, entry.Reason)
+		}
+	}
+}
+
+func confirmPrune() (bool, error) {
+	fmt.Print("remove green entries? [y/N] ")
+	answer, err := stdinReader.ReadString('\n')
+	if err != nil && !errors.Is(err, os.ErrClosed) {
+		return false, err
+	}
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	return answer == "y" || answer == "yes", nil
 }
 
 func findRepoStore(cfg Config, repo Repo) (RepoStore, error) {
