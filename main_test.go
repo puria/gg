@@ -6792,6 +6792,24 @@ func TestEnsureOwnerPathMkdirAllError(t *testing.T) {
 	}
 }
 
+func TestEnsureOwnerPathConfirmationDenied(t *testing.T) {
+	cfg := Config{Root: t.TempDir(), Host: "github.com"}
+
+	oldPromptConfirm := promptConfirm
+	defer func() { promptConfirm = oldPromptConfirm }()
+	promptConfirm = func(string) (bool, error) {
+		return false, nil
+	}
+
+	_, err := ensureOwnerPath(cfg, "owner")
+	if err == nil {
+		t.Fatal("ensureOwnerPath() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "directory creation cancelled") {
+		t.Fatalf("error = %q, want substring %q", err.Error(), "directory creation cancelled")
+	}
+}
+
 func TestInitConfigCommandMkdirAllError(t *testing.T) {
 	t.Setenv("GG_CONFIG", filepath.Join(t.TempDir(), "gg", "config"))
 	t.Setenv("HOME", t.TempDir())
