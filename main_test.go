@@ -3222,6 +3222,8 @@ func TestEnsureWorktreeReturnsExistingPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensureWorktree() first error = %v", err)
 	}
+	runGit(t, "", "--git-dir", gitDir, "remote", "add", "origin", filepath.Join(container, "offline-origin"))
+
 	second, err := ensureWorktree(store, "feature")
 	if err != nil {
 		t.Fatalf("ensureWorktree() second error = %v", err)
@@ -3444,6 +3446,7 @@ func TestEnsurePRWorktreeReturnsExistingPath(t *testing.T) {
 	if err := os.MkdirAll(prPath, 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
+	runGit(t, "", "--git-dir", gitDir, "remote", "add", "origin", filepath.Join(container, "offline-origin"))
 
 	store := RepoStore{ContainerPath: container, GitDir: gitDir, MainPath: filepath.Join(container, "main"), Managed: true}
 	got, err := ensurePRWorktree(store, 7)

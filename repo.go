@@ -418,15 +418,14 @@ func ensureWorktree(store RepoStore, worktreeName string) (string, error) {
 		// untestable: passthrough — directoryExists error is wrapped at its source.
 		return "", err
 	}
+	if exists {
+		return path, nil
+	}
 
 	if hasRemote, _ := repoHasOriginRemote(store.GitDir); hasRemote {
 		if err := runCommand("", "git", "--git-dir", store.GitDir, "fetch", "origin"); err != nil {
 			return "", fmt.Errorf("fetch remote updates: %w", err)
 		}
-	}
-
-	if exists {
-		return path, nil
 	}
 
 	if err := pruneStaleWorktreeRegistrations(store); err != nil {
@@ -493,15 +492,14 @@ func ensurePRWorktree(store RepoStore, prNumber int) (string, error) {
 		// untestable: passthrough — directoryExists error is wrapped at its source.
 		return "", err
 	}
+	if exists {
+		return path, nil
+	}
 
 	if hasRemote, _ := repoHasOriginRemote(store.GitDir); hasRemote {
 		if err := runCommand("", "git", "--git-dir", store.GitDir, "fetch", "origin"); err != nil {
 			return "", fmt.Errorf("fetch remote updates: %w", err)
 		}
-	}
-
-	if exists {
-		return path, nil
 	}
 
 	if err := pruneStaleWorktreeRegistrations(store); err != nil {
